@@ -25,19 +25,27 @@ class AnalysisError(Exception):
     pass
 
 
-def rgb_array_to_cmyk_coverage(rgb_array: np.ndarray):
+def rgb_array_to_cmyk_coverage(rgb_array: np.ndarray, mode: str = "color"):
     rgb = rgb_array.astype(np.float64) / 255.0
     r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
 
+    if mode == "grayscale":
+        gray = 0.299 * r + 0.587 * g + 0.114 * b
+        k = 1.0 - gray
+        return {"C": 0.0, "M": 0.0, "Y": 0.0, "K": float(np.clip(k, 0, 1).mean())}
+
+    if mode == "bw":
+        gray = 0.299 * r + 0.587 * g + 0.114 * b
+        k = (gray < 0.5).astype(np.float64)
+        return {"C": 0.0, "M": 0.0, "Y": 0.0, "K": float(k.mean())}
+
     k = 1.0 - np.maximum(np.maximum(r, g), b)
-    # Avoid divide-by-zero on pure black (k == 1) pixels
     safe_denom = np.where(k < 1.0, 1.0 - k, 1.0)
 
     c = (1.0 - r - k) / safe_denom
     m = (1.0 - g - k) / safe_denom
     y = (1.0 - b - k) / safe_denom
 
-    # Where k == 1 (pure black), c=m=y should be 0 (all "ink" is K)
     c = np.where(k >= 1.0, 0.0, c)
     m = np.where(k >= 1.0, 0.0, m)
     y = np.where(k >= 1.0, 0.0, y)
@@ -55,7 +63,7 @@ def _pixmap_to_rgb_array(pix) -> np.ndarray:
     return np.array(img)
 
 
-def analyze_pdf(path: str, progress_cb=None):
+def analyze_pdf(path: str, progress_cb=None, mode: str = "color"):
     if fitz is None:
         raise AnalysisError("PyMuPDF (fitz) is not installed. Run: pip install pymupdf")
 
@@ -71,7 +79,7 @@ def analyze_pdf(path: str, progress_cb=None):
     for i, page in enumerate(doc):
         pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB, alpha=False)
         rgb_array = _pixmap_to_rgb_array(pix)
-        pages_coverage.append(rgb_array_to_cmyk_coverage(rgb_array))
+        pages_coverage.append(rgb_array_to_cmyk_coverage(rgb_array, mode=mode))
         if progress_cb:
             progress_cb(i + 1, total)
 
@@ -115,7 +123,7 @@ def convert_docx_to_pdf(docx_path: str, out_dir: str) -> str:
     return out_pdf
 
 
-def analyze_docx_fallback(path: str):
+def analyze_docx_fallback(path: str, mode: str = "color"):
     if docx is None:
         raise AnalysisError("python-docx is not installed. Run: pip install python-docx")
 
@@ -135,7 +143,7 @@ def analyze_docx_fallback(path: str):
     for idx, part in enumerate(image_parts):
         try:
             img = Image.open(io.BytesIO(part.blob)).convert("RGB")
-            cov = rgb_array_to_cmyk_coverage(np.array(img))
+            cov = rgb_array_to_cmyk_coverage(np.array(img), mode=mode)
             target_page = idx % est_pages
             for ch in "CMYK":
                 pages_coverage[target_page][ch] = max(pages_coverage[target_page][ch], cov[ch])

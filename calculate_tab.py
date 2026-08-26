@@ -121,8 +121,14 @@ class CalculateTab(QWidget):
         opts_layout.addWidget(self.paper_combo, 0, 1, 1, 3)
         self._refresh_paper_options()
 
+        opts_layout.addWidget(QLabel("Print mode"), 1, 0)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Color", "Grayscale", "Black & White"])
+        self.mode_combo.setCurrentText("Color")
+        opts_layout.addWidget(self.mode_combo, 1, 1, 1, 3)
+
         for i, (key, label) in enumerate(PCT_LABELS):
-            r, c = 1 + i // 3, (i % 3) * 2
+            r, c = 2 + i // 3, (i % 3) * 2
             opts_layout.addWidget(QLabel(label), r, c)
             field = QLineEdit(str(self.settings["default_percentages"][key]))
             field.setFixedWidth(60)
@@ -293,9 +299,12 @@ class CalculateTab(QWidget):
         self.status_label.setText("Analyzing document...")
         self.preview.start_scan()
 
+        mode_map = {"Color": "color", "Grayscale": "grayscale", "Black & White": "bw"}
+        mode = mode_map[self.mode_combo.currentText()]
+
         self.worker = AnalyzeWorker(
             self.resolved_pdf_path, self.file_path,
-            self.settings["ink_prices"], self.paper["price"], percentages, self.is_approx,
+            self.settings["ink_prices"], self.paper["price"], percentages, self.is_approx, mode,
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.succeeded.connect(self._on_success)

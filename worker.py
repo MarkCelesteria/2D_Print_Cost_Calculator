@@ -31,7 +31,7 @@ class AnalyzeWorker(QThread):
     succeeded = pyqtSignal(dict, bool)
     failed = pyqtSignal(str)
 
-    def __init__(self, pdf_path, original_path, ink_prices, paper_price, percentages, is_approx, parent=None):
+    def __init__(self, pdf_path, original_path, ink_prices, paper_price, percentages, is_approx, mode="color", parent=None):
         super().__init__(parent)
         self.pdf_path = pdf_path
         self.original_path = original_path
@@ -39,6 +39,7 @@ class AnalyzeWorker(QThread):
         self.paper_price = paper_price
         self.percentages = percentages
         self.is_approx = is_approx
+        self.mode = mode
 
     def run(self):
         try:
@@ -46,9 +47,9 @@ class AnalyzeWorker(QThread):
                 self.progress.emit(cur, total)
 
             if self.pdf_path:
-                pages_coverage = analyze_pdf(self.pdf_path, progress_cb=progress_cb)
+                pages_coverage = analyze_pdf(self.pdf_path, progress_cb=progress_cb, mode=self.mode)
             else:
-                pages_coverage, _ = analyze_docx_fallback(self.original_path)
+                pages_coverage, _ = analyze_docx_fallback(self.original_path, mode=self.mode)
 
             result = compute_cost(pages_coverage, self.ink_prices, self.paper_price, self.percentages)
             self.succeeded.emit(result, self.is_approx)
