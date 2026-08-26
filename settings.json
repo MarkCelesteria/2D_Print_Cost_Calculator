@@ -27,7 +27,7 @@
   },
   "default_markup_percent": 20.0,
   "default_percentages": {
-    "labor": 5.0,
+    "labor": 10.0,
     "maintenance": 5.0,
     "electricity": 2.0,
     "spoilage": 3.0,

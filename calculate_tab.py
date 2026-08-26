@@ -10,6 +10,8 @@ from PyQt6.QtCore import Qt
 from preview_widget import PreviewWidget
 from worker import AnalyzeWorker, LoadDocumentWorker
 from analyzer import render_pdf_page
+from full_preview_dialog import FullPreviewDialog
+from print_helper import print_pdf
 
 PCT_LABELS = [
     ("labor", "Labor %"),
@@ -43,6 +45,7 @@ class CalculateTab(QWidget):
         self.is_approx = False
 
         self.pct_inputs = {}
+        self.setAcceptDrops(True)
         self._build()
 
     def _build(self):
@@ -75,10 +78,21 @@ class CalculateTab(QWidget):
         nav_row.addWidget(self.next_btn)
         left_layout.addLayout(nav_row)
 
+        self.full_preview_btn = QPushButton("⛶ Full Preview")
+        self.full_preview_btn.setObjectName("secondary")
+        self.full_preview_btn.clicked.connect(self._open_full_preview)
+        self.full_preview_btn.setEnabled(False)
+        left_layout.addWidget(self.full_preview_btn)
+
         browse_btn = QPushButton("Browse (.pdf / .docx)")
         browse_btn.setObjectName("secondary")
         browse_btn.clicked.connect(self._browse)
         left_layout.addWidget(browse_btn)
+
+        drop_hint = QLabel("or drag & drop a file here")
+        drop_hint.setObjectName("muted")
+        drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        left_layout.addWidget(drop_hint)
 
         self.file_label = QLabel("No file selected")
         self.file_label.setObjectName("muted")
@@ -158,6 +172,7 @@ class CalculateTab(QWidget):
         self.page_label.setText("No file selected")
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
+        self.full_preview_btn.setEnabled(False)
         self.status_label.setText("")
         self._clear_results()
 
@@ -202,6 +217,7 @@ class CalculateTab(QWidget):
         can_navigate = pdf_path is not None and page_count > 1
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(can_navigate)
+        self.full_preview_btn.setEnabled(pdf_path is not None)
 
         if auto_calculate:
             self._calculate()
@@ -233,6 +249,27 @@ class CalculateTab(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, "Choose a document", "", "PDF or Word (*.pdf *.docx)")
         if path:
             self.load_file(path)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if url.toLocalFile().lower().endswith((".pdf", ".docx")):
+                    event.acceptProposedAction()
+                    return
+
+    def dropEvent(self, event):
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if path.lower().endswith((".pdf", ".docx")):
+                self.load_file(path)
+                return
+
+    def _open_full_preview(self):
+        if not self.resolved_pdf_path:
+            QMessageBox.information(self, "No preview", "Load a PDF (or a .docx with LibreOffice) first.")
+            return
+        dialog = FullPreviewDialog(self.resolved_pdf_path, self.page_count, parent=self)
+        dialog.exec()
 
     def _calculate(self):
         if not self.file_path:
@@ -332,6 +369,11 @@ class CalculateTab(QWidget):
         total_row.addWidget(total_value)
         summary_layout.addLayout(total_row)
 
+        print_btn = QPushButton("🖨 Print")
+        print_btn.setObjectName("secondary")
+        print_btn.clicked.connect(self._on_print_clicked)
+        summary_layout.addWidget(print_btn)
+
         if is_approx:
             note = QLabel("Approximate: .docx text coverage is estimated (install LibreOffice for exact results).")
             note.setObjectName("muted")
@@ -376,3 +418,9 @@ class CalculateTab(QWidget):
 
         self.results_layout.addWidget(table_card)
         self.results_layout.addStretch()
+
+    def _on_print_clicked(self):
+        if not self.resolved_pdf_path:
+            QMessageBox.information(self, "Can't print", "No real PDF available for this document (install LibreOffice for .docx printing).")
+            return
+        print_pdf(self.resolved_pdf_path, parent=self)

@@ -71,6 +71,7 @@ class SettingsTab(QWidget):
         self.on_save = on_save
         self.ink_inputs = {}
         self.pct_inputs = {}
+        self.setAcceptDrops(True)
         self._build()
 
     def _build(self):
