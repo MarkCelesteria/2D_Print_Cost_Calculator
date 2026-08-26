@@ -1,0 +1,28 @@
+Windows Registry Editor Version 5.00
+
+; ============================================================
+; Adds "Calculate Print Cost" to the right-click menu for
+; .pdf and .docx files. BEFORE running this file:
+;   1. Build PrintCostCalculator.exe (see BUILD_EXE.md)
+;   2. Replace every occurrence of
+;        C:\\Path\\To\\PrintCostCalculator.exe
+;      below with the REAL full path to your .exe
+;      (keep the double backslashes \\ — that's required
+;      registry escaping, not a typo)
+;   3. Save this file, then double-click it and accept the
+;      Windows prompt to add it to the registry.
+; ============================================================
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.pdf\shell\CalculatePrintCost]
+@="Calculate Print Cost"
+"Icon"="C:\\Path\\To\\PrintCostCalculator.exe"
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.pdf\shell\CalculatePrintCost\command]
+@="\"C:\\Path\\To\\PrintCostCalculator.exe\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.docx\shell\CalculatePrintCost]
+@="Calculate Print Cost"
+"Icon"="C:\\Path\\To\\PrintCostCalculator.exe"
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.docx\shell\CalculatePrintCost\command]
+@="\"C:\\Path\\To\\PrintCostCalculator.exe\" \"%1\""
