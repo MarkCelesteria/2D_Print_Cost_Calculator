@@ -3,6 +3,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 from analyzer import render_pdf_page
 from preview_widget import pil_to_qpixmap
+from style import PREVIEW_BG, MUTED
 
 STRIP_PAGE_SIZE = (700, 900)
 
@@ -25,6 +26,11 @@ class FullPreviewDialog(QDialog):
     def __init__(self, pdf_path, page_count, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Full Preview")
+        self.setObjectName("fullPreview")
+        self.setStyleSheet(f"""
+            #fullPreview, #stripContainer {{ background: {PREVIEW_BG}; }}
+            #stripContainer QLabel {{ color: {MUTED}; }}
+        """)
 
         layout = QVBoxLayout(self)
 
@@ -39,6 +45,7 @@ class FullPreviewDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         container = QWidget()
+        container.setObjectName("stripContainer")
         strip_layout = QVBoxLayout(container)
         strip_layout.setSpacing(16)
         strip_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)

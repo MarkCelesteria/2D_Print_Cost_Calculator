@@ -1,7 +1,8 @@
 import sys
 
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QTabWidget, QSystemTrayIcon, QMenu, QMessageBox
+    QApplication, QMainWindow, QTabWidget, QSystemTrayIcon, QMenu, QMessageBox,
+    QWidget, QVBoxLayout
 )
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QAction
 from PyQt6.QtCore import Qt, QTimer
@@ -9,9 +10,12 @@ from PyQt6.QtCore import Qt, QTimer
 import pricing
 import autostart
 from analyzer import is_libreoffice_available
-from style import QSS, PRIMARY
+from style import QSS, TEXT
 from calculate_tab import CalculateTab
 from settings_tab import SettingsTab
+
+
+CMYK_COLORS = ["#00aeef", "#ec008c", "#fff200", "#231f20"]
 
 
 def make_app_icon():
@@ -19,20 +23,34 @@ def make_app_icon():
     pix.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pix)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setBrush(QColor(PRIMARY))
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.drawEllipse(2, 2, 60, 60)
-    painter.setBrush(QColor("white"))
-    painter.drawEllipse(14, 14, 36, 36)
+    painter.setBrush(QColor(TEXT))
+    painter.drawRoundedRect(2, 2, 60, 60, 14, 14)
+    dots = [(12, 12, "#00aeef"), (34, 12, "#ec008c"), (12, 34, "#fff200"), (34, 34, "#ffffff")]
+    for x, y, color in dots:
+        painter.setBrush(QColor(color))
+        painter.drawEllipse(x, y, 18, 18)
     painter.end()
     return QIcon(pix)
+
+
+class CmykBar(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(4)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        seg = self.width() / len(CMYK_COLORS)
+        for i, color in enumerate(CMYK_COLORS):
+            painter.fillRect(int(i * seg), 0, int(seg) + 1, self.height(), QColor(color))
 
 
 class MainWindow(QMainWindow):
     def __init__(self, initial_file=None, auto_calculate=False):
         super().__init__()
         self.setWindowTitle("Print Cost Calculator")
-        self.resize(820, 640)
+        self.resize(900, 720)
 
         self.settings = pricing.load_settings()
 
@@ -41,7 +59,13 @@ class MainWindow(QMainWindow):
         self.settings_tab = SettingsTab(self.settings, on_save=self._on_settings_saved)
         tabs.addTab(self.calc_tab, "Calculate")
         tabs.addTab(self.settings_tab, "Settings")
-        self.setCentralWidget(tabs)
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(CmykBar())
+        central_layout.addWidget(tabs)
+        self.setCentralWidget(central)
 
         self.app_icon = make_app_icon()
         self.setWindowIcon(self.app_icon)
@@ -124,6 +148,7 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    app.setStyle("Fusion")
     app.setStyleSheet(QSS)
 
     args = sys.argv[1:]

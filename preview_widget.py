@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import QWidget, QLabel, QVBoxLayout
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QColor, QPen
 from PyQt6.QtCore import Qt, QTimer
 
-from style import BORDER, MUTED, ACCENT_LINE
+from style import BORDER, MUTED, ACCENT_LINE, PREVIEW_BG
 
 PREVIEW_SIZE = (260, 340)
 
@@ -66,7 +66,7 @@ class PreviewWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         w, h = self.width(), self.height()
-        painter.fillRect(0, 0, w, h, QColor("#eef1f8"))
+        painter.fillRect(0, 0, w, h, QColor(PREVIEW_BG))
         painter.setPen(QPen(QColor(BORDER), 1))
         painter.drawRect(0, 0, w - 1, h - 1)
 

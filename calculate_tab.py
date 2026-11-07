@@ -55,6 +55,7 @@ class CalculateTab(QWidget):
 
     def _build(self):
         root = QHBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(14)
 
         left_card, left_layout = card()

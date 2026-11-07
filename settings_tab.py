@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFrame, QLineEdit, QMessageBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QDialog, QDialogButtonBox, QFormLayout
+    QHeaderView, QDialog, QDialogButtonBox, QFormLayout, QScrollArea
 )
 from PyQt6.QtCore import Qt
 
@@ -80,7 +80,17 @@ class SettingsTab(QWidget):
         self._build()
 
     def _build(self):
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+        content = QWidget()
+        scroll.setWidget(content)
+        root = QVBoxLayout(content)
+        root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(14)
 
         # ---- Paper sizes ----
@@ -97,6 +107,7 @@ class SettingsTab(QWidget):
         self.paper_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.paper_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.paper_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.paper_table.setMinimumHeight(190)
         paper_layout.addWidget(self.paper_table)
         self._refresh_paper_table()
 

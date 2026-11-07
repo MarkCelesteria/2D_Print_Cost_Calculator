@@ -27,11 +27,14 @@
   },
   "default_markup_percent": 20.0,
   "default_percentages": {
-    "labor": 10.0,
+    "labor": 5.0,
     "maintenance": 5.0,
     "electricity": 2.0,
     "spoilage": 3.0,
+    "printer": 0.0,
     "profit": 10.0
   },
-  "asked_about_autostart": true
+  "asked_about_autostart": true,
+  "min_price_per_page": 4.0,
+  "default_discount": 0.0
 }
