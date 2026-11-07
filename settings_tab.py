@@ -12,6 +12,7 @@ PCT_LABELS = [
     ("maintenance", "Maintenance %"),
     ("electricity", "Electricity %"),
     ("spoilage", "Spoilage %"),
+    ("printer", "Printer %"),
     ("profit", "Profit %"),
 ]
 
@@ -23,6 +24,10 @@ def card(layout_cls=QVBoxLayout):
     layout.setContentsMargins(14, 14, 14, 14)
     layout.setSpacing(6)
     return frame, layout
+
+
+def _opt_str(v):
+    return "" if v is None else str(v)
 
 
 class PaperSizeDialog(QDialog):
@@ -150,6 +155,28 @@ class SettingsTab(QWidget):
             self.pct_inputs[key] = field
             pct_layout.addWidget(field, r, c + 1)
 
+        # ---- Pricing rules ----
+        rules_card, rules_layout = card(QGridLayout)
+        root.addWidget(rules_card)
+
+        rules_header = QLabel("Pricing Rules")
+        rules_header.setObjectName("cardHeader")
+        rules_layout.addWidget(rules_header, 0, 0, 1, 4)
+        rules_sub = QLabel("Minimum price: leave blank to turn off. Discount is taken off the final total.")
+        rules_sub.setObjectName("muted")
+        rules_layout.addWidget(rules_sub, 1, 0, 1, 4)
+
+        rules_layout.addWidget(QLabel("Minimum price / page"), 2, 0)
+        self.min_price_input = QLineEdit(_opt_str(self.settings.get("min_price_per_page")))
+        self.min_price_input.setPlaceholderText("off")
+        self.min_price_input.setFixedWidth(80)
+        rules_layout.addWidget(self.min_price_input, 2, 1)
+
+        rules_layout.addWidget(QLabel("Discount %"), 2, 2)
+        self.discount_input = QLineEdit(str(self.settings.get("default_discount", 0.0)))
+        self.discount_input.setFixedWidth(80)
+        rules_layout.addWidget(self.discount_input, 2, 3)
+
         save_row = QHBoxLayout()
         reset_btn = QPushButton("Reset to Default")
         reset_btn.setObjectName("secondary")
@@ -208,6 +235,8 @@ class SettingsTab(QWidget):
         self.settings["paper_sizes"] = defaults["paper_sizes"]
         self.settings["ink_prices"] = defaults["ink_prices"]
         self.settings["default_percentages"] = defaults["default_percentages"]
+        self.settings["min_price_per_page"] = defaults["min_price_per_page"]
+        self.settings["default_discount"] = defaults["default_discount"]
 
         pricing.save_settings(self.settings)
         self.on_save()
@@ -217,6 +246,8 @@ class SettingsTab(QWidget):
             field.setText(str(self.settings["ink_prices"][ch]))
         for key, field in self.pct_inputs.items():
             field.setText(str(self.settings["default_percentages"][key]))
+        self.min_price_input.setText(_opt_str(self.settings["min_price_per_page"]))
+        self.discount_input.setText(str(self.settings["default_discount"]))
 
         QMessageBox.information(self, "Reset", "Settings reset to default.")
         
@@ -226,6 +257,12 @@ class SettingsTab(QWidget):
                 self.settings["ink_prices"][ch] = float(field.text())
             for key, field in self.pct_inputs.items():
                 self.settings["default_percentages"][key] = float(field.text())
+            raw = self.min_price_input.text().strip()
+            self.settings["min_price_per_page"] = float(raw) if raw else None
+            discount = float(self.discount_input.text().strip() or 0)
+            if not 0 <= discount <= 100:
+                raise ValueError
+            self.settings["default_discount"] = discount
         except ValueError:
             QMessageBox.critical(self, "Invalid input", "Ink prices and percentages must be numbers.")
             return

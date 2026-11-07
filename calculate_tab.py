@@ -9,7 +9,7 @@ from PyQt6.QtCore import Qt
 
 from preview_widget import PreviewWidget
 from worker import AnalyzeWorker, LoadDocumentWorker
-from analyzer import render_pdf_page
+from analyzer import render_pdf_page, SUPPORTED_EXTS, is_image
 from full_preview_dialog import FullPreviewDialog
 from print_helper import print_pdf
 
@@ -18,6 +18,7 @@ PCT_LABELS = [
     ("maintenance", "Maintenance %"),
     ("electricity", "Electricity %"),
     ("spoilage", "Spoilage %"),
+    ("printer", "Printer %"),
     ("profit", "Profit %"),
 ]
 
@@ -36,6 +37,10 @@ class CalculateTab(QWidget):
         super().__init__(parent)
         self.settings = settings
         self.file_path = None
+        self.sources = []
+        self._load_id = 0
+        self._loading = False
+        self._workers = []
         self.worker = None
         self.load_worker = None
 
@@ -84,12 +89,12 @@ class CalculateTab(QWidget):
         self.full_preview_btn.setEnabled(False)
         left_layout.addWidget(self.full_preview_btn)
 
-        browse_btn = QPushButton("Browse (.pdf / .docx)")
+        browse_btn = QPushButton("Browse (PDF / Word / images)")
         browse_btn.setObjectName("secondary")
         browse_btn.clicked.connect(self._browse)
         left_layout.addWidget(browse_btn)
 
-        drop_hint = QLabel("or drag & drop a file here")
+        drop_hint = QLabel("or drag & drop files here")
         drop_hint.setObjectName("muted")
         drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         left_layout.addWidget(drop_hint)
@@ -127,13 +132,31 @@ class CalculateTab(QWidget):
         self.mode_combo.setCurrentText("Color")
         opts_layout.addWidget(self.mode_combo, 1, 1, 1, 3)
 
+        opts_layout.addWidget(QLabel("Image fit"), 2, 0)
+        self.fit_combo = QComboBox()
+        self.fit_combo.addItems(["Fit (with margins)", "Fill (edge to edge)"])
+        opts_layout.addWidget(self.fit_combo, 2, 1)
+        opts_layout.addWidget(QLabel("Per page"), 2, 2)
+        self.per_page_combo = QComboBox()
+        self.per_page_combo.addItems(["1", "2", "4"])
+        opts_layout.addWidget(self.per_page_combo, 2, 3)
+
+        self.paper_combo.currentIndexChanged.connect(self._reload_layout)
+        self.fit_combo.currentIndexChanged.connect(self._reload_layout)
+        self.per_page_combo.currentIndexChanged.connect(self._reload_layout)
+
         for i, (key, label) in enumerate(PCT_LABELS):
-            r, c = 2 + i // 3, (i % 3) * 2
+            r, c = 3 + i // 3, (i % 3) * 2
             opts_layout.addWidget(QLabel(label), r, c)
             field = QLineEdit(str(self.settings["default_percentages"][key]))
             field.setFixedWidth(60)
             self.pct_inputs[key] = field
             opts_layout.addWidget(field, r, c + 1)
+
+        opts_layout.addWidget(QLabel("Discount %"), 5, 0)
+        self.discount_input = QLineEdit(str(self.settings.get("default_discount", 0.0)))
+        self.discount_input.setFixedWidth(60)
+        opts_layout.addWidget(self.discount_input, 5, 1)
 
         calc_row = QHBoxLayout()
         self.calc_btn = QPushButton("Calculate Cost")
@@ -161,13 +184,18 @@ class CalculateTab(QWidget):
         self._refresh_paper_options()
         for key, field in self.pct_inputs.items():
             field.setText(str(self.settings["default_percentages"][key]))
+        self.discount_input.setText(str(self.settings.get("default_discount", 0.0)))
 
     def _on_refresh_clicked(self):
         for key, field in self.pct_inputs.items():
             field.setText(str(self.settings["default_percentages"][key]))
+        self.discount_input.setText(str(self.settings.get("default_discount", 0.0)))
         self._refresh_paper_options()
 
         self.file_path = None
+        self.sources = []
+        self._load_id += 1
+        self._loading = False
         self.resolved_pdf_path = None
         self.page_count = 1
         self.current_page = 0
@@ -184,29 +212,72 @@ class CalculateTab(QWidget):
 
     def _refresh_paper_options(self):
         current = self.paper_combo.currentText()
+        self.paper_combo.blockSignals(True)
         self.paper_combo.clear()
         names = [p["name"] for p in self.settings["paper_sizes"]]
         self.paper_combo.addItems(names)
         if current in names:
             self.paper_combo.setCurrentText(current)
+        self.paper_combo.blockSignals(False)
 
     def load_file(self, path, auto_calculate=False):
-        self.file_path = path
-        self.file_label.setText(os.path.basename(path))
+        self.load_files([path], auto_calculate)
+
+    def load_files(self, paths, auto_calculate=False):
+        paths = [p for p in paths if p.lower().endswith(SUPPORTED_EXTS)]
+        if not paths:
+            return
+        self.sources = paths
+        self.file_path = paths[0]
+        if len(paths) == 1:
+            self.file_label.setText(os.path.basename(paths[0]))
+        else:
+            self.file_label.setText(f"{len(paths)} files selected")
+        self._start_load(auto_calculate)
+
+    def _reload_layout(self):
+        # paper / fit / per-page changed: rebuild the merged PDF
+        if len(self.sources) > 1 or any(is_image(p) for p in self.sources):
+            self._clear_results()
+            self._start_load()
+
+    def _current_paper(self):
+        name = self.paper_combo.currentText()
+        return next((p for p in self.settings["paper_sizes"] if p["name"] == name), None)
+
+    def _start_load(self, auto_calculate=False):
+        paper = self._current_paper()
+        if paper is None:
+            QMessageBox.warning(self, "No paper size", "Please add a paper size in Settings first.")
+            return
+        self._load_id += 1
+        load_id = self._load_id
+        self._loading = True
         self.preview.show_placeholder("Loading preview...")
         self.page_label.setText("Loading...")
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
-
+        self.full_preview_btn.setEnabled(False)
         self.resolved_pdf_path = None
         self.page_count = 1
         self.current_page = 0
 
-        self.load_worker = LoadDocumentWorker(path)
-        self.load_worker.ready.connect(lambda *args: self._on_document_loaded(*args, auto_calculate=auto_calculate))
-        self.load_worker.start()
+        worker = LoadDocumentWorker(
+            self.sources, paper,
+            fill=self.fit_combo.currentIndex() == 1,
+            per_page=int(self.per_page_combo.currentText()),
+        )
+        worker.ready.connect(lambda *args: self._on_document_loaded(*args, auto_calculate=auto_calculate, load_id=load_id))
+        worker.warning.connect(lambda msg: QMessageBox.warning(self, "Heads up", msg))
+        worker.finished.connect(lambda: self._workers.remove(worker))
+        self._workers.append(worker)
+        self.load_worker = worker
+        worker.start()
 
-    def _on_document_loaded(self, pdf_path, page_count, first_page_img, is_approx, auto_calculate=False):
+    def _on_document_loaded(self, pdf_path, page_count, first_page_img, is_approx, auto_calculate=False, load_id=None):
+        if load_id != self._load_id:
+            return
+        self._loading = False
         self.resolved_pdf_path = pdf_path
         self.page_count = page_count
         self.current_page = 0
@@ -252,23 +323,19 @@ class CalculateTab(QWidget):
         self.next_btn.setEnabled(self.current_page < self.page_count - 1)
 
     def _browse(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Choose a document", "", "PDF or Word (*.pdf *.docx)")
-        if path:
-            self.load_file(path)
+        exts = " ".join(f"*{e}" for e in SUPPORTED_EXTS)
+        paths, _ = QFileDialog.getOpenFileNames(self, "Choose files", "", f"Documents and images ({exts})")
+        if paths:
+            self.load_files(paths)
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            for url in event.mimeData().urls():
-                if url.toLocalFile().lower().endswith((".pdf", ".docx")):
-                    event.acceptProposedAction()
-                    return
+        if event.mimeData().hasUrls() and any(
+            u.toLocalFile().lower().endswith(SUPPORTED_EXTS) for u in event.mimeData().urls()
+        ):
+            event.acceptProposedAction()
 
     def dropEvent(self, event):
-        for url in event.mimeData().urls():
-            path = url.toLocalFile()
-            if path.lower().endswith((".pdf", ".docx")):
-                self.load_file(path)
-                return
+        self.load_files([u.toLocalFile() for u in event.mimeData().urls()])
 
     def _open_full_preview(self):
         if not self.resolved_pdf_path:
@@ -279,7 +346,14 @@ class CalculateTab(QWidget):
 
     def _calculate(self):
         if not self.file_path:
-            QMessageBox.warning(self, "No file", "Please select a .pdf or .docx file first.")
+            QMessageBox.warning(self, "No file", "Please select a file first.")
+            return
+        if self._loading:
+            self.status_label.setText("Still preparing files, try again in a moment...")
+            return
+        single_docx = len(self.sources) == 1 and self.file_path.lower().endswith(".docx")
+        if not self.resolved_pdf_path and not single_docx:
+            QMessageBox.warning(self, "Can't read files", "The selected files couldn't be prepared.")
             return
         if self.paper_combo.count() == 0:
             QMessageBox.warning(self, "No paper size", "Please add a paper size in Settings first.")
@@ -287,8 +361,9 @@ class CalculateTab(QWidget):
 
         try:
             percentages = {key: float(field.text()) for key, field in self.pct_inputs.items()}
+            discount_pct = float(self.discount_input.text().strip() or 0)
         except ValueError:
-            QMessageBox.critical(self, "Invalid input", "Percentages must be numbers.")
+            QMessageBox.critical(self, "Invalid input", "Percentages and discount must be numbers.")
             return
 
         paper_name = self.paper_combo.currentText()
@@ -305,6 +380,7 @@ class CalculateTab(QWidget):
         self.worker = AnalyzeWorker(
             self.resolved_pdf_path, self.file_path,
             self.settings["ink_prices"], self.paper["price"], percentages, self.is_approx, mode,
+            min_price=self.settings.get("min_price_per_page"), discount_pct=discount_pct,
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.succeeded.connect(self._on_success)
@@ -353,6 +429,8 @@ class CalculateTab(QWidget):
 
         self._row(summary_layout, "Ink cost", f"{result['ink_total']:.2f}")
         self._row(summary_layout, "Paper cost", f"{result['paper_total']:.2f}")
+        if result["min_topup"] > 0:
+            self._row(summary_layout, "Minimum price top-up", f"{result['min_topup']:.2f}", muted=True)
         self._row(summary_layout, "Subtotal", f"{result['subtotal']:.2f}")
 
         line = QFrame()
@@ -363,6 +441,10 @@ class CalculateTab(QWidget):
             pct = result["percentages"].get(key, 0)
             amt = result["category_amounts"].get(key, 0)
             self._row(summary_layout, f"{label.replace(' %','')} ({pct:g}%)", f"{amt:.2f}", muted=True)
+
+        if result["discount_amount"] > 0:
+            self._row(summary_layout, f"Discount ({result['discount_pct']:g}%)",
+                      f"-{result['discount_amount']:.2f}", muted=True)
 
         line2 = QFrame()
         line2.setFrameShape(QFrame.Shape.HLine)

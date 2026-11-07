@@ -20,8 +20,11 @@ DEFAULT_SETTINGS = {
         "maintenance": 5.0,
         "electricity": 2.0,
         "spoilage": 3.0,
+        "printer": 0.0,
         "profit": 10.0,
     },
+    "min_price_per_page": None,
+    "default_discount": 0.0,
     "asked_about_autostart": False,
 }
 
@@ -38,9 +41,11 @@ def load_settings() -> dict:
     with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    # backfill any missing keys (e.g. after an app update)
     for key, value in DEFAULT_SETTINGS.items():
-        data.setdefault(key, value)
+        data.setdefault(key, json.loads(json.dumps(value)))
+    for group in ("ink_prices", "default_percentages"):
+        for k, v in DEFAULT_SETTINGS[group].items():
+            data[group].setdefault(k, v)
     return data
 
 

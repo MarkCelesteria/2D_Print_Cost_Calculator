@@ -171,31 +171,42 @@ def analyze_document(path: str, progress_cb=None):
     raise AnalysisError(f"Unsupported file type: {ext}. Use a .pdf or .docx file.")
 
 
-def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float, percentages: dict):
+def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float, percentages: dict,
+                 min_price_per_page=None, discount_pct: float = 0.0):
     per_page = []
     ink_total = 0.0
+    min_topup = 0.0
 
     for cov in pages_coverage:
         page_ink_cost = sum(cov[ch] * ink_prices.get(ch, 0.0) for ch in "CMYK")
+        topup = 0.0
+        if min_price_per_page:
+            topup = max(0.0, min_price_per_page - (page_ink_cost + paper_price_per_sheet))
         ink_total += page_ink_cost
-        per_page.append({"coverage": cov, "ink_cost": page_ink_cost})
+        min_topup += topup
+        per_page.append({"coverage": cov, "ink_cost": page_ink_cost, "topup": topup})
 
     num_pages = len(pages_coverage)
     paper_total = paper_price_per_sheet * num_pages
-    subtotal = ink_total + paper_total
+    subtotal = ink_total + paper_total + min_topup
 
     category_amounts = {name: subtotal * (pct / 100.0) for name, pct in percentages.items()}
-    total = subtotal + sum(category_amounts.values())
+    gross = subtotal + sum(category_amounts.values())
+    discount_amount = gross * (discount_pct / 100.0)
 
     return {
         "num_pages": num_pages,
         "per_page": per_page,
         "ink_total": ink_total,
         "paper_total": paper_total,
+        "min_topup": min_topup,
         "subtotal": subtotal,
         "percentages": percentages,
         "category_amounts": category_amounts,
-        "total": total,
+        "gross": gross,
+        "discount_pct": discount_pct,
+        "discount_amount": discount_amount,
+        "total": gross - discount_amount,
     }
 
 
@@ -271,3 +282,139 @@ def render_pdf_page(pdf_path: str, page_index: int, max_size=(280, 360)):
     doc.close()
     img.thumbnail(max_size)
     return img
+
+
+# ---------------- image / batch support ----------------
+
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass
+
+from PIL import ImageOps
+
+IMAGE_EXTS = (".jpg", ".jpeg", ".jfif", ".jpe", ".png", ".bmp", ".webp", ".tif", ".tiff", ".heic", ".heif")
+DOC_EXTS = (".pdf", ".docx")
+SUPPORTED_EXTS = DOC_EXTS + IMAGE_EXTS
+
+GRID_FOR = {1: (1, 1), 2: (1, 2), 4: (2, 2)}
+FIT_MARGIN_PT = 18
+FIT_GAP_PT = 10
+IMAGE_DPI = 300
+
+
+def is_image(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in IMAGE_EXTS
+
+
+def load_image_rgb(path: str) -> Image.Image:
+    img = Image.open(path)
+    img = ImageOps.exif_transpose(img)
+    if img.mode in ("RGBA", "LA", "P"):
+        rgba = img.convert("RGBA")
+        bg = Image.new("RGB", rgba.size, "white")
+        bg.paste(rgba, mask=rgba.split()[3])
+        return bg
+    return img.convert("RGB")
+
+
+def _cell_rects(w, h, cols, rows, margin, gap):
+    cw = (w - 2 * margin - gap * (cols - 1)) / cols
+    ch = (h - 2 * margin - gap * (rows - 1)) / rows
+    return [
+        fitz.Rect(margin + c * (cw + gap), margin + r * (ch + gap),
+                  margin + c * (cw + gap) + cw, margin + r * (ch + gap) + ch)
+        for r in range(rows) for c in range(cols)
+    ]
+
+
+def _place_image(page, img: Image.Image, rect, fill: bool):
+    cw, ch = rect.width, rect.height
+    if (img.width > img.height) != (cw > ch):
+        img = img.rotate(90, expand=True)
+
+    if fill:
+        target = cw / ch
+        w, h = img.size
+        if w / h > target:
+            nw = int(h * target)
+            left = (w - nw) // 2
+            img = img.crop((left, 0, left + nw, h))
+        else:
+            nh = int(w / target)
+            top = (h - nh) // 2
+            img = img.crop((0, top, w, top + nh))
+        dest = rect
+    else:     # fit inside the cell, keep aspect ratio, centered
+        s = min(cw / img.width, ch / img.height)
+        dw, dh = img.width * s, img.height * s
+        x0, y0 = rect.x0 + (cw - dw) / 2, rect.y0 + (ch - dh) / 2
+        dest = fitz.Rect(x0, y0, x0 + dw, y0 + dh)
+
+    max_w, max_h = int(dest.width / 72 * IMAGE_DPI), int(dest.height / 72 * IMAGE_DPI)
+    if img.width > max_w or img.height > max_h:
+        img.thumbnail((max_w, max_h), Image.LANCZOS)
+
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=92)
+    page.insert_image(dest, stream=buf.getvalue())
+
+
+def build_batch_pdf(paths, paper_w_in, paper_h_in, fill=False, per_page=1):
+    """Merge images / PDFs / docx into one temp PDF. Returns (pdf_path, skipped_names)."""
+    if fitz is None:
+        raise AnalysisError("PyMuPDF (fitz) is not installed. Run: pip install pymupdf")
+
+    short, long_ = sorted((paper_w_in * 72, paper_h_in * 72))
+    cols, rows = GRID_FOR.get(per_page, (1, 1))
+    margin, gap = (0, 0) if fill else (FIT_MARGIN_PT, FIT_GAP_PT)
+
+    out = fitz.open()
+    skipped = []
+    pending = []
+
+    def flush():
+        for i in range(0, len(pending), per_page):
+            imgs = []
+            for p in pending[i:i + per_page]:
+                try:
+                    imgs.append(load_image_rgb(p))
+                except Exception:
+                    skipped.append(os.path.basename(p))
+            if not imgs:
+                continue
+            if per_page == 1 and imgs[0].width > imgs[0].height:
+                w, h = long_, short
+            else:
+                w, h = short, long_
+            page = out.new_page(width=w, height=h)
+            for img, rect in zip(imgs, _cell_rects(w, h, cols, rows, margin, gap)):
+                _place_image(page, img, rect, fill)
+        pending.clear()
+
+    for p in paths:
+        if is_image(p):
+            pending.append(p)
+            continue
+        flush()
+        try:
+            pdf, _ = resolve_to_pdf(p)
+            if pdf is None:
+                skipped.append(os.path.basename(p))
+                continue
+            src = fitz.open(pdf)
+            out.insert_pdf(src)
+            src.close()
+        except Exception:
+            skipped.append(os.path.basename(p))
+    flush()
+
+    if len(out) == 0:
+        out.close()
+        raise AnalysisError("None of the selected files could be read.")
+
+    pdf_path = os.path.join(tempfile.mkdtemp(prefix="printcost_"), "batch.pdf")
+    out.save(pdf_path)
+    out.close()
+    return pdf_path, skipped
