@@ -7,6 +7,8 @@ from PyQt6.QtCore import Qt
 
 import pricing
 
+QUALITY_LABELS = [("draft", "Draft"), ("standard", "Standard"), ("high", "High")]
+
 PCT_LABELS = [
     ("labor", "Labor %"),
     ("maintenance", "Maintenance %"),
@@ -76,6 +78,7 @@ class SettingsTab(QWidget):
         self.on_save = on_save
         self.ink_inputs = {}
         self.pct_inputs = {}
+        self.quality_inputs = {}
         self.setAcceptDrops(True)
         self._build()
 
@@ -166,6 +169,26 @@ class SettingsTab(QWidget):
             self.pct_inputs[key] = field
             pct_layout.addWidget(field, r, c + 1)
 
+        self.pct_inputs["printer"].setToolTip("Savings for buying a new printer when this one wears out")
+
+        # ---- Print quality ----
+        q_card, q_layout = card(QGridLayout)
+        root.addWidget(q_card)
+
+        q_header = QLabel("Print Quality")
+        q_header.setObjectName("cardHeader")
+        q_layout.addWidget(q_header, 0, 0, 1, 6)
+        q_sub = QLabel("Ink cost multiplier per quality level (paper cost is not affected)")
+        q_sub.setObjectName("muted")
+        q_layout.addWidget(q_sub, 1, 0, 1, 6)
+
+        for i, (key, label) in enumerate(QUALITY_LABELS):
+            q_layout.addWidget(QLabel(f"{label} ×"), 2, i * 2)
+            field = QLineEdit(str(self.settings["quality_multipliers"][key]))
+            field.setFixedWidth(70)
+            self.quality_inputs[key] = field
+            q_layout.addWidget(field, 2, i * 2 + 1)
+
         # ---- Pricing rules ----
         rules_card, rules_layout = card(QGridLayout)
         root.addWidget(rules_card)
@@ -173,20 +196,36 @@ class SettingsTab(QWidget):
         rules_header = QLabel("Pricing Rules")
         rules_header.setObjectName("cardHeader")
         rules_layout.addWidget(rules_header, 0, 0, 1, 4)
-        rules_sub = QLabel("Minimum price: leave blank to turn off. Discount is taken off the final total.")
+        rules_sub = QLabel("Minimum prices are per page, checked after all percentages. Leave blank to turn off. "
+                           "If only B&W is set, it also applies to color pages. Discount is taken off the final total.")
+        rules_sub.setWordWrap(True)
         rules_sub.setObjectName("muted")
         rules_layout.addWidget(rules_sub, 1, 0, 1, 4)
 
-        rules_layout.addWidget(QLabel("Minimum price / page"), 2, 0)
+        rules_layout.addWidget(QLabel("Min price / page (B&W)"), 2, 0)
         self.min_price_input = QLineEdit(_opt_str(self.settings.get("min_price_per_page")))
         self.min_price_input.setPlaceholderText("off")
         self.min_price_input.setFixedWidth(80)
         rules_layout.addWidget(self.min_price_input, 2, 1)
 
-        rules_layout.addWidget(QLabel("Discount %"), 2, 2)
+        rules_layout.addWidget(QLabel("Min price / page (Color)"), 2, 2)
+        self.min_price_color_input = QLineEdit(_opt_str(self.settings.get("min_price_color")))
+        self.min_price_color_input.setPlaceholderText("off")
+        self.min_price_color_input.setFixedWidth(80)
+        rules_layout.addWidget(self.min_price_color_input, 2, 3)
+
+        rules_layout.addWidget(QLabel("Discount %"), 3, 0)
         self.discount_input = QLineEdit(str(self.settings.get("default_discount", 0.0)))
         self.discount_input.setFixedWidth(80)
-        rules_layout.addWidget(self.discount_input, 2, 3)
+        rules_layout.addWidget(self.discount_input, 3, 1)
+
+        rules_layout.addWidget(QLabel("Color page threshold %"), 3, 2)
+        self.color_threshold_input = QLineEdit(str(self.settings.get("color_threshold_pct", 0.5)))
+        self.color_threshold_input.setFixedWidth(80)
+        self.color_threshold_input.setToolTip(
+            "A page counts as Color only if at least this % of it is colored. "
+            "Raise it to ignore tiny colored items.")
+        rules_layout.addWidget(self.color_threshold_input, 3, 3)
 
         save_row = QHBoxLayout()
         reset_btn = QPushButton("Reset to Default")
@@ -247,7 +286,10 @@ class SettingsTab(QWidget):
         self.settings["ink_prices"] = defaults["ink_prices"]
         self.settings["default_percentages"] = defaults["default_percentages"]
         self.settings["min_price_per_page"] = defaults["min_price_per_page"]
+        self.settings["min_price_color"] = defaults["min_price_color"]
+        self.settings["color_threshold_pct"] = defaults["color_threshold_pct"]
         self.settings["default_discount"] = defaults["default_discount"]
+        self.settings["quality_multipliers"] = defaults["quality_multipliers"]
 
         pricing.save_settings(self.settings)
         self.on_save()
@@ -258,7 +300,11 @@ class SettingsTab(QWidget):
         for key, field in self.pct_inputs.items():
             field.setText(str(self.settings["default_percentages"][key]))
         self.min_price_input.setText(_opt_str(self.settings["min_price_per_page"]))
+        self.min_price_color_input.setText(_opt_str(self.settings["min_price_color"]))
+        self.color_threshold_input.setText(str(self.settings["color_threshold_pct"]))
         self.discount_input.setText(str(self.settings["default_discount"]))
+        for key, field in self.quality_inputs.items():
+            field.setText(str(self.settings["quality_multipliers"][key]))
 
         QMessageBox.information(self, "Reset", "Settings reset to default.")
         
@@ -270,10 +316,21 @@ class SettingsTab(QWidget):
                 self.settings["default_percentages"][key] = float(field.text())
             raw = self.min_price_input.text().strip()
             self.settings["min_price_per_page"] = float(raw) if raw else None
+            raw_c = self.min_price_color_input.text().strip()
+            self.settings["min_price_color"] = float(raw_c) if raw_c else None
+            threshold = float(self.color_threshold_input.text().strip() or 0)
+            if not 0 <= threshold <= 100:
+                raise ValueError
+            self.settings["color_threshold_pct"] = threshold
             discount = float(self.discount_input.text().strip() or 0)
             if not 0 <= discount <= 100:
                 raise ValueError
             self.settings["default_discount"] = discount
+            for key, field in self.quality_inputs.items():
+                mult = float(field.text())
+                if mult <= 0:
+                    raise ValueError
+                self.settings["quality_multipliers"][key] = mult
         except ValueError:
             QMessageBox.critical(self, "Invalid input", "Ink prices and percentages must be numbers.")
             return

@@ -140,6 +140,10 @@ QHeaderView::section {{
     font-size: 12px;
 }}
 
+/* ---------- progress ---------- */
+QProgressBar {{ background: {BORDER}; border: none; border-radius: 4px; max-height: 8px; }}
+QProgressBar::chunk {{ background: {PRIMARY}; border-radius: 4px; }}
+
 /* ---------- scrolling ---------- */
 QScrollArea {{ border: none; background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}

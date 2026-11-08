@@ -9,7 +9,7 @@ from PyQt6.QtCore import Qt
 
 from preview_widget import PreviewWidget
 from worker import AnalyzeWorker, LoadDocumentWorker
-from analyzer import render_pdf_page, SUPPORTED_EXTS, is_image
+from analyzer import render_pdf_page, apply_preview_mode, compute_cost, cleanup_temp_dirs, SUPPORTED_EXTS, is_image
 from full_preview_dialog import FullPreviewDialog
 from print_helper import print_pdf
 
@@ -21,6 +21,9 @@ PCT_LABELS = [
     ("printer", "Printer %"),
     ("profit", "Profit %"),
 ]
+
+
+QUALITY_LABELS = [("draft", "Draft"), ("standard", "Standard"), ("high", "High")]
 
 
 def card(layout_cls=QVBoxLayout):
@@ -39,6 +42,8 @@ class CalculateTab(QWidget):
         self.file_path = None
         self.sources = []
         self._load_id = 0
+        self._analysis_cache = {}
+        self._calc_load_id = 0
         self._loading = False
         self._workers = []
         self.worker = None
@@ -50,6 +55,7 @@ class CalculateTab(QWidget):
         self.is_approx = False
 
         self.pct_inputs = {}
+        self.quality_inputs = {}
         self.setAcceptDrops(True)
         self._build()
 
@@ -84,6 +90,23 @@ class CalculateTab(QWidget):
         nav_row.addWidget(self.next_btn)
         left_layout.addLayout(nav_row)
 
+        self.calc_btn = QPushButton("Calculate Cost")
+        self.calc_btn.setObjectName("primary")
+        self.calc_btn.clicked.connect(self._calculate)
+        left_layout.addWidget(self.calc_btn)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setObjectName("secondary")
+        self.cancel_btn.clicked.connect(self._cancel_calculation)
+        self.cancel_btn.setVisible(False)
+        left_layout.addWidget(self.cancel_btn)
+
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("muted")
+        self.status_label.setWordWrap(True)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        left_layout.addWidget(self.status_label)
+
         self.full_preview_btn = QPushButton("⛶ Full Preview")
         self.full_preview_btn.setObjectName("secondary")
         self.full_preview_btn.clicked.connect(self._open_full_preview)
@@ -109,13 +132,9 @@ class CalculateTab(QWidget):
         right_col = QVBoxLayout()
         root.addLayout(right_col, 1)
 
-        top_row = QHBoxLayout()
-        top_row.addStretch()
         self.refresh_btn = QPushButton("⟳ Refresh")
         self.refresh_btn.setObjectName("secondary")
         self.refresh_btn.clicked.connect(self._on_refresh_clicked)
-        top_row.addWidget(self.refresh_btn)
-        right_col.addLayout(top_row)
 
         opts_card, opts_layout = card(QGridLayout)
         opts_layout.setHorizontalSpacing(10)
@@ -131,7 +150,14 @@ class CalculateTab(QWidget):
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["Color", "Grayscale", "Black & White"])
         self.mode_combo.setCurrentText("Color")
-        opts_layout.addWidget(self.mode_combo, 1, 1, 1, 3)
+        self.mode_combo.currentIndexChanged.connect(self._refresh_preview_mode)
+        opts_layout.addWidget(self.mode_combo, 1, 1)
+
+        opts_layout.addWidget(QLabel("Quality"), 1, 2)
+        self.quality_combo = QComboBox()
+        self.quality_combo.addItems(["Draft", "Standard", "High"])
+        self.quality_combo.setCurrentText("Standard")
+        opts_layout.addWidget(self.quality_combo, 1, 3)
 
         opts_layout.addWidget(QLabel("Image fit"), 2, 0)
         self.fit_combo = QComboBox()
@@ -159,18 +185,6 @@ class CalculateTab(QWidget):
         self.discount_input.setFixedWidth(60)
         opts_layout.addWidget(self.discount_input, 5, 1)
 
-        calc_row = QHBoxLayout()
-        self.calc_btn = QPushButton("Calculate Cost")
-        self.calc_btn.setObjectName("primary")
-        self.calc_btn.clicked.connect(self._calculate)
-        calc_row.addWidget(self.calc_btn)
-        calc_row.addStretch()
-        right_col.addLayout(calc_row)
-
-        self.status_label = QLabel("")
-        self.status_label.setObjectName("muted")
-        right_col.addWidget(self.status_label)
-
         self.results_scroll = QScrollArea()
         self.results_scroll.setWidgetResizable(True)
         self.results_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -196,6 +210,7 @@ class CalculateTab(QWidget):
         self.file_path = None
         self.sources = []
         self._load_id += 1
+        self._analysis_cache = {}
         self._loading = False
         self.resolved_pdf_path = None
         self.page_count = 1
@@ -253,6 +268,7 @@ class CalculateTab(QWidget):
             return
         self._load_id += 1
         load_id = self._load_id
+        self._analysis_cache = {}
         self._loading = True
         self.preview.show_placeholder("Loading preview...")
         self.page_label.setText("Loading...")
@@ -280,12 +296,14 @@ class CalculateTab(QWidget):
             return
         self._loading = False
         self.resolved_pdf_path = pdf_path
+        if self.worker is None or not self.worker.isRunning():
+            cleanup_temp_dirs(keep_path=pdf_path)
         self.page_count = page_count
         self.current_page = 0
         self.is_approx = is_approx
 
         if first_page_img is not None:
-            self.preview.show_image(first_page_img)
+            self.preview.show_image(apply_preview_mode(first_page_img, self._current_mode()))
         else:
             self.preview.show_placeholder(
                 "No preview available\n(install LibreOffice for .docx previews)"
@@ -299,6 +317,13 @@ class CalculateTab(QWidget):
 
         if auto_calculate:
             self._calculate()
+
+    def _current_mode(self):
+        return {"Color": "color", "Grayscale": "grayscale", "Black & White": "bw"}[self.mode_combo.currentText()]
+
+    def _refresh_preview_mode(self):
+        if self.resolved_pdf_path:
+            self._show_current_page()
 
     def _update_page_label(self):
         if self.resolved_pdf_path is None:
@@ -318,7 +343,7 @@ class CalculateTab(QWidget):
 
     def _show_current_page(self):
         img = render_pdf_page(self.resolved_pdf_path, self.current_page)
-        self.preview.show_image(img)
+        self.preview.show_image(apply_preview_mode(img, self._current_mode()))
         self._update_page_label()
         self.prev_btn.setEnabled(self.current_page > 0)
         self.next_btn.setEnabled(self.current_page < self.page_count - 1)
@@ -342,8 +367,9 @@ class CalculateTab(QWidget):
         if not self.resolved_pdf_path:
             QMessageBox.information(self, "No preview", "Load a PDF (or a .docx with LibreOffice) first.")
             return
-        dialog = FullPreviewDialog(self.resolved_pdf_path, self.page_count, parent=self)
+        dialog = FullPreviewDialog(self.resolved_pdf_path, self.page_count, parent=self, mode=self._current_mode())
         dialog.exec()
+        dialog.deleteLater()
 
     def _calculate(self):
         if not self.file_path:
@@ -371,35 +397,77 @@ class CalculateTab(QWidget):
         self.paper = next(p for p in self.settings["paper_sizes"] if p["name"] == paper_name)
 
         self._clear_results()
-        self.calc_btn.setEnabled(False)
+        self._set_calculating(True)
         self.status_label.setText("Analyzing document...")
-        self.preview.start_scan()
 
         mode_map = {"Color": "color", "Grayscale": "grayscale", "Black & White": "bw"}
         mode = mode_map[self.mode_combo.currentText()]
+        quality = self.quality_combo.currentText().lower()
+        ink_multiplier = self.settings["quality_multipliers"].get(quality, 1.0)
+        self.print_mode = mode
+        self.print_quality = quality
+        self._calc_load_id = self._load_id
+
+        cached = self._analysis_cache.get(mode)
+        if cached is not None:
+            self._set_calculating(False)
+            coverage, cached_approx = cached
+            result = compute_cost(
+                coverage, self.settings["ink_prices"], self.paper["price"], percentages,
+                min_price_per_page=self.settings.get("min_price_per_page"),
+                discount_pct=discount_pct, ink_multiplier=ink_multiplier,
+                min_price_color=self.settings.get("min_price_color"),
+                color_threshold_pct=self.settings.get("color_threshold_pct", 0.5),
+            )
+            self.status_label.setText("Done (reused the earlier scan)." + (" (approximate estimate)" if cached_approx else ""))
+            self._render_results(result, self.paper, cached_approx)
+            return
 
         self.worker = AnalyzeWorker(
             self.resolved_pdf_path, self.file_path,
             self.settings["ink_prices"], self.paper["price"], percentages, self.is_approx, mode,
             min_price=self.settings.get("min_price_per_page"), discount_pct=discount_pct,
+            ink_multiplier=ink_multiplier,
+            min_price_color=self.settings.get("min_price_color"),
+            color_threshold_pct=self.settings.get("color_threshold_pct", 0.5),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.succeeded.connect(self._on_success)
         self.worker.failed.connect(self._on_failure)
+        self.worker.cancelled.connect(self._on_cancelled)
         self.worker.start()
+
+    def _set_calculating(self, on):
+        self.calc_btn.setVisible(not on)
+        self.cancel_btn.setVisible(on)
+        self.cancel_btn.setEnabled(True)
+        if on:
+            self.preview.start_scan()
+        else:
+            self.preview.stop_scan()
+
+    def _cancel_calculation(self):
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.cancel()
+            self.cancel_btn.setEnabled(False)
+            self.status_label.setText("Cancelling...")
+
+    def _on_cancelled(self):
+        self._set_calculating(False)
+        self.status_label.setText("Cancelled.")
 
     def _on_progress(self, cur, total):
         self.status_label.setText(f"Analyzing page {cur} of {total}...")
 
     def _on_failure(self, msg):
-        self.preview.stop_scan()
-        self.calc_btn.setEnabled(True)
+        self._set_calculating(False)
         self.status_label.setText("")
         QMessageBox.critical(self, "Error", msg)
 
     def _on_success(self, result, is_approx):
-        self.preview.stop_scan()
-        self.calc_btn.setEnabled(True)
+        self._set_calculating(False)
+        if self._calc_load_id == self._load_id:
+            self._analysis_cache[self.print_mode] = ([p["coverage"] for p in result["per_page"]], is_approx)
         self.status_label.setText("Done." + (" (approximate estimate)" if is_approx else ""))
         self._render_results(result, self.paper, is_approx)
 
@@ -424,14 +492,24 @@ class CalculateTab(QWidget):
 
     def _render_results(self, result, paper, is_approx):
         summary_card, summary_layout = card()
+        header_row = QHBoxLayout()
         header = QLabel(f"{result['num_pages']} page(s) — {paper['name']}")
         header.setObjectName("cardHeader")
-        summary_layout.addWidget(header)
+        header_total = QLabel(f"{result['total']:.2f}")
+        header_total.setObjectName("total")
+        header_row.addWidget(header)
+        header_row.addStretch()
+        header_row.addWidget(header_total)
+        summary_layout.addLayout(header_row)
+        counts = QLabel(f"{result['color_pages']} color, {result['num_pages'] - result['color_pages']} black & white")
+        counts.setObjectName("muted")
+        summary_layout.addWidget(counts)
 
-        self._row(summary_layout, "Ink cost", f"{result['ink_total']:.2f}")
+        ink_label = "Ink cost"
+        if result["ink_multiplier"] != 1:
+            ink_label += f" (×{result['ink_multiplier']:g})"
+        self._row(summary_layout, ink_label, f"{result['ink_total']:.2f}")
         self._row(summary_layout, "Paper cost", f"{result['paper_total']:.2f}")
-        if result["min_topup"] > 0:
-            self._row(summary_layout, "Minimum price top-up", f"{result['min_topup']:.2f}", muted=True)
         self._row(summary_layout, "Subtotal", f"{result['subtotal']:.2f}")
 
         line = QFrame()
@@ -442,6 +520,9 @@ class CalculateTab(QWidget):
             pct = result["percentages"].get(key, 0)
             amt = result["category_amounts"].get(key, 0)
             self._row(summary_layout, f"{label.replace(' %','')} ({pct:g}%)", f"{amt:.2f}", muted=True)
+
+        if result["min_topup"] > 0:
+            self._row(summary_layout, "Minimum price top-up", f"{result['min_topup']:.2f}", muted=True)
 
         if result["discount_amount"] > 0:
             self._row(summary_layout, f"Discount ({result['discount_pct']:g}%)",
@@ -484,8 +565,8 @@ class CalculateTab(QWidget):
         note2.setWordWrap(True)
         table_layout.addWidget(note2)
 
-        table = QTableWidget(len(result["per_page"]), 6)
-        table.setHorizontalHeaderLabels(["Page", "Cyan %", "Magenta %", "Yellow %", "Black %", "Ink cost"])
+        table = QTableWidget(len(result["per_page"]), 7)
+        table.setHorizontalHeaderLabels(["Page", "Cyan %", "Magenta %", "Yellow %", "Black %", "Ink cost", "Color area"])
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -499,6 +580,7 @@ class CalculateTab(QWidget):
                 f"{cov['Y']*100:.1f}%",
                 f"{cov['K']*100:.1f}%",
                 f"{p['ink_cost']:.2f}",
+                f"{cov['color_frac']*100:.2f}% · {'Color' if p['is_color'] else 'B&W'}",
             ]
             for col, val in enumerate(values):
                 item = QTableWidgetItem(val)
@@ -515,4 +597,12 @@ class CalculateTab(QWidget):
         if not self.resolved_pdf_path:
             QMessageBox.information(self, "Can't print", "No real PDF available for this document (install LibreOffice for .docx printing).")
             return
-        print_pdf(self.resolved_pdf_path, parent=self)
+        names = [os.path.basename(p) for p in self.sources]
+        job_name = names[0] if len(names) == 1 else f"{len(names)} files"
+        print_pdf(
+            self.resolved_pdf_path, parent=self,
+            paper=getattr(self, "paper", None),
+            color_mode=getattr(self, "print_mode", "color"),
+            quality=getattr(self, "print_quality", "standard"),
+            job_name=job_name,
+        )

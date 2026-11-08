@@ -18,12 +18,15 @@ DEFAULT_SETTINGS = {
     "default_percentages": {
         "labor": 5.0,
         "maintenance": 5.0,
-        "electricity": 2.0,
+        "electricity": 3.0,
         "spoilage": 3.0,
-        "printer": 0.0,
+        "printer": 10.0,
         "profit": 10.0,
     },
+    "quality_multipliers": {"draft": 0.7, "standard": 1.0, "high": 2.8},
     "min_price_per_page": None,
+    "min_price_color": None,
+    "color_threshold_pct": 0.5,
     "default_discount": 0.0,
     "asked_about_autostart": False,
 }
@@ -43,7 +46,7 @@ def load_settings() -> dict:
 
     for key, value in DEFAULT_SETTINGS.items():
         data.setdefault(key, json.loads(json.dumps(value)))
-    for group in ("ink_prices", "default_percentages"):
+    for group in ("ink_prices", "default_percentages", "quality_multipliers"):
         for k, v in DEFAULT_SETTINGS[group].items():
             data[group].setdefault(k, v)
     return data

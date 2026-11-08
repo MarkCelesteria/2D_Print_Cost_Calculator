@@ -29,12 +29,19 @@
   "default_percentages": {
     "labor": 5.0,
     "maintenance": 5.0,
-    "electricity": 2.0,
+    "electricity": 3.0,
     "spoilage": 3.0,
-    "printer": 0.0,
+    "printer": 10.0,
     "profit": 10.0
   },
   "asked_about_autostart": true,
-  "min_price_per_page": 4.0,
-  "default_discount": 0.0
+  "min_price_per_page": null,
+  "default_discount": 0.0,
+  "quality_multipliers": {
+    "draft": 0.7,
+    "standard": 1.0,
+    "high": 2.8
+  },
+  "min_price_color": null,
+  "color_threshold_pct": 0.5
 }

@@ -2,14 +2,14 @@ import sys
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QSystemTrayIcon, QMenu, QMessageBox,
-    QWidget, QVBoxLayout
+    QWidget, QVBoxLayout, QHBoxLayout
 )
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QAction
 from PyQt6.QtCore import Qt, QTimer
 
 import pricing
 import autostart
-from analyzer import is_libreoffice_available
+from analyzer import is_libreoffice_available, cleanup_temp_dirs, cleanup_old_temp_dirs
 from style import QSS, TEXT
 from calculate_tab import CalculateTab
 from settings_tab import SettingsTab
@@ -59,6 +59,13 @@ class MainWindow(QMainWindow):
         self.settings_tab = SettingsTab(self.settings, on_save=self._on_settings_saved)
         tabs.addTab(self.calc_tab, "Calculate")
         tabs.addTab(self.settings_tab, "Settings")
+
+        corner = QWidget()
+        corner_layout = QHBoxLayout(corner)
+        corner_layout.setContentsMargins(0, 4, 14, 4)
+        corner_layout.addWidget(self.calc_tab.refresh_btn)
+        tabs.setCornerWidget(corner, Qt.Corner.TopRightCorner)
+        tabs.currentChanged.connect(lambda i: corner.setVisible(i == 0))
         central = QWidget()
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(0, 0, 0, 0)
@@ -147,7 +154,10 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setApplicationName("Print Cost Calculator")
     app.setQuitOnLastWindowClosed(False)
+    app.aboutToQuit.connect(cleanup_temp_dirs)
+    cleanup_old_temp_dirs()
     app.setStyle("Fusion")
     app.setStyleSheet(QSS)
 

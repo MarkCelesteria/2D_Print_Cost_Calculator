@@ -19,6 +19,7 @@ except ImportError:
 
 
 RENDER_DPI = 150
+COLOR_SPREAD = 0.12
 
 
 class AnalysisError(Exception):
@@ -32,12 +33,12 @@ def rgb_array_to_cmyk_coverage(rgb_array: np.ndarray, mode: str = "color"):
     if mode == "grayscale":
         gray = 0.299 * r + 0.587 * g + 0.114 * b
         k = 1.0 - gray
-        return {"C": 0.0, "M": 0.0, "Y": 0.0, "K": float(np.clip(k, 0, 1).mean())}
+        return {"C": 0.0, "M": 0.0, "Y": 0.0, "K": float(np.clip(k, 0, 1).mean()), "color_frac": 0.0}
 
     if mode == "bw":
         gray = 0.299 * r + 0.587 * g + 0.114 * b
         k = (gray < 0.5).astype(np.float64)
-        return {"C": 0.0, "M": 0.0, "Y": 0.0, "K": float(k.mean())}
+        return {"C": 0.0, "M": 0.0, "Y": 0.0, "K": float(k.mean()), "color_frac": 0.0}
 
     k = 1.0 - np.maximum(np.maximum(r, g), b)
     safe_denom = np.where(k < 1.0, 1.0 - k, 1.0)
@@ -50,7 +51,11 @@ def rgb_array_to_cmyk_coverage(rgb_array: np.ndarray, mode: str = "color"):
     m = np.where(k >= 1.0, 0.0, m)
     y = np.where(k >= 1.0, 0.0, y)
 
+    spread = rgb.max(axis=-1) - rgb.min(axis=-1)
+    color_frac = float((spread > COLOR_SPREAD).mean())
+
     return {
+        "color_frac": color_frac,
         "C": float(np.clip(c, 0, 1).mean()),
         "M": float(np.clip(m, 0, 1).mean()),
         "Y": float(np.clip(y, 0, 1).mean()),
@@ -135,7 +140,7 @@ def analyze_docx_fallback(path: str, mode: str = "color"):
 
     # flat assumption: typical text-only page ~= 5% black coverage
     TEXT_K_COVERAGE = 0.05
-    pages_coverage = [{"C": 0.0, "M": 0.0, "Y": 0.0, "K": TEXT_K_COVERAGE} for _ in range(est_pages)]
+    pages_coverage = [{"C": 0.0, "M": 0.0, "Y": 0.0, "K": TEXT_K_COVERAGE, "color_frac": 0.0} for _ in range(est_pages)]
 
     # fold in embedded images, spread across the estimated pages
     image_parts = [rel.target_part for rel in document.part.rels.values()
@@ -147,6 +152,7 @@ def analyze_docx_fallback(path: str, mode: str = "color"):
             target_page = idx % est_pages
             for ch in "CMYK":
                 pages_coverage[target_page][ch] = max(pages_coverage[target_page][ch], cov[ch])
+            pages_coverage[target_page]["color_frac"] = max(pages_coverage[target_page]["color_frac"], cov["color_frac"])
         except Exception:
             continue
 
@@ -172,32 +178,41 @@ def analyze_document(path: str, progress_cb=None):
 
 
 def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float, percentages: dict,
-                 min_price_per_page=None, discount_pct: float = 0.0):
+                 min_price_per_page=None, discount_pct: float = 0.0, ink_multiplier: float = 1.0,
+                 min_price_color=None, color_threshold_pct: float = 0.5):
     per_page = []
     ink_total = 0.0
     min_topup = 0.0
+    pct_factor = 1.0 + sum(percentages.values()) / 100.0
 
     for cov in pages_coverage:
-        page_ink_cost = sum(cov[ch] * ink_prices.get(ch, 0.0) for ch in "CMYK")
-        topup = 0.0
-        if min_price_per_page:
-            topup = max(0.0, min_price_per_page - (page_ink_cost + paper_price_per_sheet))
+        page_ink_cost = sum(cov[ch] * ink_prices.get(ch, 0.0) for ch in "CMYK") * ink_multiplier
+        is_color = cov.get("color_frac", 0.0) * 100.0 >= color_threshold_pct
+        floor = min_price_color if (is_color and min_price_color) else min_price_per_page
+
+        # page price after all percentages, then the minimum is applied to that
+        page_total = (page_ink_cost + paper_price_per_sheet) * pct_factor
+        topup = max(0.0, floor - page_total) if floor else 0.0
+
         ink_total += page_ink_cost
         min_topup += topup
-        per_page.append({"coverage": cov, "ink_cost": page_ink_cost, "topup": topup})
+        per_page.append({"coverage": cov, "ink_cost": page_ink_cost, "is_color": is_color,
+                         "topup": topup, "total": page_total + topup})
 
     num_pages = len(pages_coverage)
     paper_total = paper_price_per_sheet * num_pages
-    subtotal = ink_total + paper_total + min_topup
+    subtotal = ink_total + paper_total
 
     category_amounts = {name: subtotal * (pct / 100.0) for name, pct in percentages.items()}
-    gross = subtotal + sum(category_amounts.values())
+    gross = subtotal + sum(category_amounts.values()) + min_topup
     discount_amount = gross * (discount_pct / 100.0)
 
     return {
         "num_pages": num_pages,
+        "color_pages": sum(1 for p in per_page if p["is_color"]),
         "per_page": per_page,
         "ink_total": ink_total,
+        "ink_multiplier": ink_multiplier,
         "paper_total": paper_total,
         "min_topup": min_topup,
         "subtotal": subtotal,
@@ -258,7 +273,7 @@ def resolve_to_pdf(path: str):
         soffice = _soffice_path()
         if not soffice:
             return None, True
-        tmp_dir = tempfile.mkdtemp(prefix="printcost_")
+        tmp_dir = make_temp_dir()
         pdf_path = convert_docx_to_pdf(path, tmp_dir)
         return pdf_path, False
 
@@ -272,12 +287,12 @@ def get_pdf_page_count(pdf_path: str) -> int:
     return count
 
 
-def render_pdf_page(pdf_path: str, page_index: int, max_size=(280, 360)):
+def render_pdf_page(pdf_path: str, page_index: int, max_size=(280, 360), scale: float = 1.2):
     doc = fitz.open(pdf_path)
     if page_index < 0 or page_index >= len(doc):
         doc.close()
         return None
-    pix = doc[page_index].get_pixmap(matrix=fitz.Matrix(1.2, 1.2), colorspace=fitz.csRGB, alpha=False)
+    pix = doc[page_index].get_pixmap(matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False)
     img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     doc.close()
     img.thumbnail(max_size)
@@ -414,7 +429,56 @@ def build_batch_pdf(paths, paper_w_in, paper_h_in, fill=False, per_page=1):
         out.close()
         raise AnalysisError("None of the selected files could be read.")
 
-    pdf_path = os.path.join(tempfile.mkdtemp(prefix="printcost_"), "batch.pdf")
+    pdf_path = os.path.join(make_temp_dir(), "batch.pdf")
     out.save(pdf_path)
     out.close()
     return pdf_path, skipped
+
+
+def apply_preview_mode(img, mode: str = "color"):
+    """Show a page the way it will print. Same rules as the cost estimate."""
+    if img is None or mode == "color":
+        return img
+    gray = img.convert("L")  # same 0.299/0.587/0.114 weights as the analysis
+    if mode == "grayscale":
+        return gray.convert("RGB")
+    return gray.point(lambda v: 0 if v < 128 else 255).convert("RGB")  # "bw": dark -> black, else white
+
+
+# ---------------- temp file management ----------------
+
+import glob
+import threading
+import time
+
+_TEMP_DIRS = set()
+_TEMP_LOCK = threading.Lock()
+
+
+def make_temp_dir() -> str:
+    path = tempfile.mkdtemp(prefix="printcost_")
+    with _TEMP_LOCK:
+        _TEMP_DIRS.add(path)
+    return path
+
+
+def cleanup_temp_dirs(keep_path=None):
+    """Delete the temp folders this session created (except the one holding keep_path)."""
+    keep = os.path.abspath(keep_path) if keep_path else None
+    with _TEMP_LOCK:
+        for d in list(_TEMP_DIRS):
+            if keep and keep.startswith(os.path.abspath(d) + os.sep):
+                continue
+            shutil.rmtree(d, ignore_errors=True)
+            _TEMP_DIRS.discard(d)
+
+
+def cleanup_old_temp_dirs(max_age_hours: float = 24):
+    """On startup: remove leftovers from earlier sessions."""
+    cutoff = time.time() - max_age_hours * 3600
+    for d in glob.glob(os.path.join(tempfile.gettempdir(), "printcost_*")):
+        try:
+            if os.path.getmtime(d) < cutoff:
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass

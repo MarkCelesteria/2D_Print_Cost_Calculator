@@ -40,13 +40,19 @@ class LoadDocumentWorker(QThread):
             self.ready.emit(None, 1, None, True)
 
 
+class _Cancelled(Exception):
+    pass
+
+
 class AnalyzeWorker(QThread):
     progress = pyqtSignal(int, int)
     succeeded = pyqtSignal(dict, bool)
     failed = pyqtSignal(str)
+    cancelled = pyqtSignal()
 
     def __init__(self, pdf_path, original_path, ink_prices, paper_price, percentages, is_approx, mode="color",
-                 min_price=None, discount_pct=0.0, parent=None):
+                 min_price=None, discount_pct=0.0, ink_multiplier=1.0, min_price_color=None,
+                 color_threshold_pct=0.5, parent=None):
         super().__init__(parent)
         self.pdf_path = pdf_path
         self.original_path = original_path
@@ -55,12 +61,21 @@ class AnalyzeWorker(QThread):
         self.percentages = percentages
         self.is_approx = is_approx
         self.mode = mode
+        self._abort = False
         self.min_price = min_price
         self.discount_pct = discount_pct
+        self.ink_multiplier = ink_multiplier
+        self.min_price_color = min_price_color
+        self.color_threshold_pct = color_threshold_pct
+
+    def cancel(self):
+        self._abort = True
 
     def run(self):
         try:
             def progress_cb(cur, total):
+                if self._abort:
+                    raise _Cancelled()
                 self.progress.emit(cur, total)
 
             if self.pdf_path:
@@ -69,8 +84,15 @@ class AnalyzeWorker(QThread):
                 pages_coverage, _ = analyze_docx_fallback(self.original_path, mode=self.mode)
 
             result = compute_cost(pages_coverage, self.ink_prices, self.paper_price, self.percentages,
-                                  min_price_per_page=self.min_price, discount_pct=self.discount_pct)
+                                  min_price_per_page=self.min_price, discount_pct=self.discount_pct,
+                                  ink_multiplier=self.ink_multiplier,
+                                  min_price_color=self.min_price_color,
+                                  color_threshold_pct=self.color_threshold_pct)
+            if self._abort:
+                raise _Cancelled()
             self.succeeded.emit(result, self.is_approx)
+        except _Cancelled:
+            self.cancelled.emit()
         except AnalysisError as e:
             self.failed.emit(str(e))
         except Exception as e:
