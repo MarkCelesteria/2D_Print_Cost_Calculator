@@ -52,7 +52,7 @@ class AnalyzeWorker(QThread):
 
     def __init__(self, pdf_path, original_path, ink_prices, paper_price, percentages, is_approx, mode="color",
                  min_price=None, discount_pct=0.0, ink_multiplier=1.0, min_price_color=None,
-                 color_threshold_pct=0.5, parent=None):
+                 color_threshold_pct=0.5, pages=None, parent=None):
         super().__init__(parent)
         self.pdf_path = pdf_path
         self.original_path = original_path
@@ -67,6 +67,7 @@ class AnalyzeWorker(QThread):
         self.ink_multiplier = ink_multiplier
         self.min_price_color = min_price_color
         self.color_threshold_pct = color_threshold_pct
+        self.pages = pages
 
     def cancel(self):
         self._abort = True
@@ -83,11 +84,17 @@ class AnalyzeWorker(QThread):
             else:
                 pages_coverage, _ = analyze_docx_fallback(self.original_path, mode=self.mode)
 
-            result = compute_cost(pages_coverage, self.ink_prices, self.paper_price, self.percentages,
+            selected, numbers = pages_coverage, None
+            if self.pages:
+                numbers = [n for n in self.pages if n <= len(pages_coverage)]
+                selected = [pages_coverage[n - 1] for n in numbers]
+            result = compute_cost(selected, self.ink_prices, self.paper_price, self.percentages,
+                                  page_numbers=numbers,
                                   min_price_per_page=self.min_price, discount_pct=self.discount_pct,
                                   ink_multiplier=self.ink_multiplier,
                                   min_price_color=self.min_price_color,
                                   color_threshold_pct=self.color_threshold_pct)
+            result["all_coverage"] = pages_coverage
             if self._abort:
                 raise _Cancelled()
             self.succeeded.emit(result, self.is_approx)

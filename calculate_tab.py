@@ -9,7 +9,9 @@ from PyQt6.QtCore import Qt
 
 from preview_widget import PreviewWidget
 from worker import AnalyzeWorker, LoadDocumentWorker
-from analyzer import render_pdf_page, apply_preview_mode, compute_cost, cleanup_temp_dirs, SUPPORTED_EXTS, is_image
+from analyzer import (render_pdf_page, apply_preview_mode, compute_cost, cleanup_temp_dirs,
+                      parse_page_ranges, format_page_ranges, get_document_page_size, closest_paper,
+                      get_pdf_page_inches, fit_page_to_paper, SUPPORTED_EXTS, is_image)
 from full_preview_dialog import FullPreviewDialog
 from print_helper import print_pdf
 
@@ -90,6 +92,12 @@ class CalculateTab(QWidget):
         nav_row.addWidget(self.next_btn)
         left_layout.addLayout(nav_row)
 
+        self.pages_caption = QLabel("")
+        self.pages_caption.setObjectName("muted")
+        self.pages_caption.setWordWrap(True)
+        self.pages_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        left_layout.addWidget(self.pages_caption)
+
         self.calc_btn = QPushButton("Calculate Cost")
         self.calc_btn.setObjectName("primary")
         self.calc_btn.clicked.connect(self._calculate)
@@ -143,7 +151,14 @@ class CalculateTab(QWidget):
 
         opts_layout.addWidget(QLabel("Paper size"), 0, 0)
         self.paper_combo = QComboBox()
-        opts_layout.addWidget(self.paper_combo, 0, 1, 1, 3)
+        self.paper_note = QLabel("")
+        self.paper_note.setWordWrap(True)
+        self.paper_note.hide()
+        paper_box = QVBoxLayout()
+        paper_box.setSpacing(2)
+        paper_box.addWidget(self.paper_combo)
+        paper_box.addWidget(self.paper_note)
+        opts_layout.addLayout(paper_box, 0, 1, 1, 5)
         self._refresh_paper_options()
 
         opts_layout.addWidget(QLabel("Print mode"), 1, 0)
@@ -169,21 +184,28 @@ class CalculateTab(QWidget):
         opts_layout.addWidget(self.per_page_combo, 2, 3)
 
         self.paper_combo.currentIndexChanged.connect(self._reload_layout)
+        self.paper_combo.currentIndexChanged.connect(self._on_paper_changed)
         self.fit_combo.currentIndexChanged.connect(self._reload_layout)
         self.per_page_combo.currentIndexChanged.connect(self._reload_layout)
 
         for i, (key, label) in enumerate(PCT_LABELS):
-            r, c = 3 + i // 3, (i % 3) * 2
+            r, c = 4 + i // 3, (i % 3) * 2
             opts_layout.addWidget(QLabel(label), r, c)
             field = QLineEdit(str(self.settings["default_percentages"][key]))
             field.setFixedWidth(60)
             self.pct_inputs[key] = field
             opts_layout.addWidget(field, r, c + 1)
 
-        opts_layout.addWidget(QLabel("Discount %"), 5, 0)
+        opts_layout.addWidget(QLabel("Discount %"), 6, 0)
         self.discount_input = QLineEdit(str(self.settings.get("default_discount", 0.0)))
         self.discount_input.setFixedWidth(60)
-        opts_layout.addWidget(self.discount_input, 5, 1)
+        opts_layout.addWidget(self.discount_input, 6, 1)
+
+        opts_layout.addWidget(QLabel("Print pages"), 3, 0)
+        self.pages_input = QLineEdit()
+        self.pages_input.setPlaceholderText("All pages (or e.g. 1-6, 8-9, 11, 12)")
+        self.pages_input.textChanged.connect(self._on_pages_changed)
+        opts_layout.addWidget(self.pages_input, 3, 1, 1, 5)
 
         self.results_scroll = QScrollArea()
         self.results_scroll.setWidgetResizable(True)
@@ -211,6 +233,11 @@ class CalculateTab(QWidget):
         self.sources = []
         self._load_id += 1
         self._analysis_cache = {}
+        self.doc_size = None
+        self.paper_note.hide()
+        self.pages_input.clear()
+        self.doc_size = None
+        self.paper_note.hide()
         self._loading = False
         self.resolved_pdf_path = None
         self.page_count = 1
@@ -235,6 +262,7 @@ class CalculateTab(QWidget):
         if current in names:
             self.paper_combo.setCurrentText(current)
         self.paper_combo.blockSignals(False)
+        self._update_paper_note()
 
     def load_file(self, path, auto_calculate=False):
         self.load_files([path], auto_calculate)
@@ -245,6 +273,7 @@ class CalculateTab(QWidget):
             return
         self.sources = paths
         self.file_path = paths[0]
+        self._new_document = True
         if len(paths) == 1:
             self.file_label.setText(os.path.basename(paths[0]))
         else:
@@ -256,6 +285,76 @@ class CalculateTab(QWidget):
         if len(self.sources) > 1 or any(is_image(p) for p in self.sources):
             self._clear_results()
             self._start_load()
+
+    def _detect_paper(self):
+        """Read the document's page size, pre-select the closest paper and flag a mismatch."""
+        is_new = getattr(self, "_new_document", False)
+        self._new_document = False
+        self.doc_size = None
+        self._paper_auto_note = ""
+        if self.resolved_pdf_path and not any(is_image(p) for p in self.sources):
+            try:
+                self.doc_size = get_document_page_size(self.resolved_pdf_path)
+            except Exception:
+                self.doc_size = None
+        if self.doc_size and is_new:  # only for a newly chosen file, never override a manual choice later
+            idx = closest_paper(self.doc_size, self.settings["paper_sizes"])
+            if idx is not None and idx != self.paper_combo.currentIndex():
+                self.paper_combo.blockSignals(True)
+                self.paper_combo.setCurrentIndex(idx)
+                self.paper_combo.blockSignals(False)
+                self._paper_auto_note = f"Paper set to {self.paper_combo.currentText()} to match the document."
+        self._update_paper_note()
+
+    def _on_paper_changed(self):
+        self._paper_auto_note = ""  # a manual choice: drop the "paper set to..." message
+        self._update_paper_note()
+        if self.resolved_pdf_path:
+            self._show_current_page()
+
+    def _update_paper_note(self):
+        size = getattr(self, "doc_size", None)
+        paper = self._current_paper() if self.paper_combo.count() else None
+        if not size or paper is None:
+            self.paper_note.hide()
+            return
+        ps = sorted((paper["width_in"], paper["height_in"]))
+        label = f"{size[0]:g}×{size[1]:g} in"
+        if max(abs(ps[0] - size[0]), abs(ps[1] - size[1])) <= 0.15:
+            text, color = getattr(self, "_paper_auto_note", ""), "#64748b"  # matches: only say what the app did
+        else:
+            scale = min(ps[0] / size[0], ps[1] / size[1])
+            if scale < 0.98:
+                text = f"Document is {label}; pages shrink to {scale * 100:.0f}% on this paper."
+            elif scale > 1.02:
+                text = f"Document is {label}; pages are enlarged to {scale * 100:.0f}% to fill this paper."
+            else:
+                text = f"Document is {label}; pages leave blank space on this paper."
+            text += " The preview shows how it prints."
+            if closest_paper(size, self.settings["paper_sizes"]) is None:
+                text += " No paper in Settings matches it."
+            color = "#b45309"
+        self.paper_note.setStyleSheet(f"color: {color}; font-size: 11px;")
+        self.paper_note.setText(text)
+        self.paper_note.setVisible(bool(text))
+
+    def _fit_paper(self):
+        """The selected paper when the document doesn't match it (previews then show how it prints on it)."""
+        size = getattr(self, "doc_size", None)
+        paper = self._current_paper() if self.paper_combo.count() else None
+        if not size or paper is None:
+            return None
+        ps = sorted((paper["width_in"], paper["height_in"]))
+        return None if max(abs(ps[0] - size[0]), abs(ps[1] - size[1])) <= 0.15 else paper
+
+    def _prepare_preview(self, img, page_index):
+        img = apply_preview_mode(img, self._current_mode())
+        paper = self._fit_paper()
+        if paper is not None and img is not None:
+            size = get_pdf_page_inches(self.resolved_pdf_path, page_index)
+            if size:
+                img = fit_page_to_paper(img, size, paper["width_in"], paper["height_in"], max_size=(256, 336))
+        return img
 
     def _current_paper(self):
         name = self.paper_combo.currentText()
@@ -298,12 +397,13 @@ class CalculateTab(QWidget):
         self.resolved_pdf_path = pdf_path
         if self.worker is None or not self.worker.isRunning():
             cleanup_temp_dirs(keep_path=pdf_path)
+        self._detect_paper()
         self.page_count = page_count
         self.current_page = 0
         self.is_approx = is_approx
 
         if first_page_img is not None:
-            self.preview.show_image(apply_preview_mode(first_page_img, self._current_mode()))
+            self.preview.show_image(self._prepare_preview(first_page_img, 0))
         else:
             self.preview.show_placeholder(
                 "No preview available\n(install LibreOffice for .docx previews)"
@@ -331,22 +431,65 @@ class CalculateTab(QWidget):
         else:
             self.page_label.setText(f"Page {self.current_page + 1} of {self.page_count}")
 
+    def _selected_pages(self):
+        """1-based pages from the Print pages field, or None for all (also while the text is incomplete)."""
+        if not self.resolved_pdf_path:
+            return None
+        try:
+            return parse_page_ranges(self.pages_input.text(), self.page_count)
+        except ValueError:
+            return None
+
+    def _included_indexes(self):
+        sel = self._selected_pages()
+        return [n - 1 for n in sel] if sel else list(range(self.page_count))
+
+    def _update_nav_buttons(self):
+        inc = self._included_indexes()
+        self.prev_btn.setEnabled(any(i < self.current_page for i in inc))
+        self.next_btn.setEnabled(any(i > self.current_page for i in inc))
+
+    def _update_pages_caption(self):
+        text = self.pages_input.text().strip()
+        if not text or not self.resolved_pdf_path:
+            self.pages_caption.setText("")
+            return
+        try:
+            pages = parse_page_ranges(text, self.page_count)
+        except ValueError:
+            self.pages_caption.setText("Can't read the page list")
+            return
+        self.pages_caption.setText(f"Printing pages {format_page_ranges(pages)} ({len(pages)} of {self.page_count})")
+
+    def _on_pages_changed(self):
+        if not self.resolved_pdf_path:
+            return
+        self._update_pages_caption()
+        included = self._included_indexes()
+        if self.current_page not in included:
+            later = [i for i in included if i >= self.current_page]
+            self.current_page = later[0] if later else included[-1]
+            self._show_current_page()
+        else:
+            self._update_nav_buttons()
+
     def _go_prev(self):
-        if self.current_page > 0:
-            self.current_page -= 1
+        prev = [i for i in self._included_indexes() if i < self.current_page]
+        if prev:
+            self.current_page = prev[-1]
             self._show_current_page()
 
     def _go_next(self):
-        if self.current_page < self.page_count - 1:
-            self.current_page += 1
+        nxt = [i for i in self._included_indexes() if i > self.current_page]
+        if nxt:
+            self.current_page = nxt[0]
             self._show_current_page()
 
     def _show_current_page(self):
         img = render_pdf_page(self.resolved_pdf_path, self.current_page)
-        self.preview.show_image(apply_preview_mode(img, self._current_mode()))
+        self.preview.show_image(self._prepare_preview(img, self.current_page))
         self._update_page_label()
-        self.prev_btn.setEnabled(self.current_page > 0)
-        self.next_btn.setEnabled(self.current_page < self.page_count - 1)
+        self._update_nav_buttons()
 
     def _browse(self):
         exts = " ".join(f"*{e}" for e in SUPPORTED_EXTS)
@@ -367,7 +510,9 @@ class CalculateTab(QWidget):
         if not self.resolved_pdf_path:
             QMessageBox.information(self, "No preview", "Load a PDF (or a .docx with LibreOffice) first.")
             return
-        dialog = FullPreviewDialog(self.resolved_pdf_path, self.page_count, parent=self, mode=self._current_mode())
+        dialog = FullPreviewDialog(self.resolved_pdf_path, self.page_count, parent=self,
+                                   mode=self._current_mode(), included=self._selected_pages(),
+                                   fit_paper=self._fit_paper())
         dialog.exec()
         dialog.deleteLater()
 
@@ -393,6 +538,14 @@ class CalculateTab(QWidget):
             QMessageBox.critical(self, "Invalid input", "Percentages and discount must be numbers.")
             return
 
+        try:
+            page_text = self.pages_input.text() if self.resolved_pdf_path else ""
+            selected_pages = parse_page_ranges(page_text, self.page_count)
+        except ValueError as e:
+            QMessageBox.critical(self, "Invalid pages", str(e))
+            return
+        self.print_pages = selected_pages
+
         paper_name = self.paper_combo.currentText()
         self.paper = next(p for p in self.settings["paper_sizes"] if p["name"] == paper_name)
 
@@ -412,8 +565,10 @@ class CalculateTab(QWidget):
         if cached is not None:
             self._set_calculating(False)
             coverage, cached_approx = cached
+            chosen = coverage if not selected_pages else [coverage[n - 1] for n in selected_pages]
             result = compute_cost(
-                coverage, self.settings["ink_prices"], self.paper["price"], percentages,
+                chosen, self.settings["ink_prices"], self.paper["price"], percentages,
+                page_numbers=selected_pages,
                 min_price_per_page=self.settings.get("min_price_per_page"),
                 discount_pct=discount_pct, ink_multiplier=ink_multiplier,
                 min_price_color=self.settings.get("min_price_color"),
@@ -430,12 +585,14 @@ class CalculateTab(QWidget):
             ink_multiplier=ink_multiplier,
             min_price_color=self.settings.get("min_price_color"),
             color_threshold_pct=self.settings.get("color_threshold_pct", 0.5),
+            pages=selected_pages,
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.succeeded.connect(self._on_success)
         self.worker.failed.connect(self._on_failure)
         self.worker.cancelled.connect(self._on_cancelled)
-        self.worker.start()
+        from PyQt6.QtCore import QThread
+        self.worker.start(QThread.Priority.LowPriority)
 
     def _set_calculating(self, on):
         self.calc_btn.setVisible(not on)
@@ -467,7 +624,7 @@ class CalculateTab(QWidget):
     def _on_success(self, result, is_approx):
         self._set_calculating(False)
         if self._calc_load_id == self._load_id:
-            self._analysis_cache[self.print_mode] = ([p["coverage"] for p in result["per_page"]], is_approx)
+            self._analysis_cache[self.print_mode] = (result["all_coverage"], is_approx)
         self.status_label.setText("Done." + (" (approximate estimate)" if is_approx else ""))
         self._render_results(result, self.paper, is_approx)
 
@@ -501,7 +658,10 @@ class CalculateTab(QWidget):
         header_row.addStretch()
         header_row.addWidget(header_total)
         summary_layout.addLayout(header_row)
-        counts = QLabel(f"{result['color_pages']} color, {result['num_pages'] - result['color_pages']} black & white")
+        shown = [p["page"] for p in result["per_page"]]
+        prefix = "" if len(shown) == self.page_count else f"Pages {format_page_ranges(shown)} · "
+        counts = QLabel(prefix + f"{result['color_pages']} color, {result['num_pages'] - result['color_pages']} black & white")
+        counts.setWordWrap(True)
         counts.setObjectName("muted")
         summary_layout.addWidget(counts)
 
@@ -566,7 +726,7 @@ class CalculateTab(QWidget):
         table_layout.addWidget(note2)
 
         table = QTableWidget(len(result["per_page"]), 7)
-        table.setHorizontalHeaderLabels(["Page", "Cyan %", "Magenta %", "Yellow %", "Black %", "Ink cost", "Color area"])
+        table.setHorizontalHeaderLabels(["Page", "Cyan %", "Magenta %", "Yellow %", "Black %", "Ink cost", "Price"])
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -574,17 +734,23 @@ class CalculateTab(QWidget):
         for i, p in enumerate(result["per_page"]):
             cov = p["coverage"]
             values = [
-                str(i + 1),
+                str(p["page"]),
                 f"{cov['C']*100:.1f}%",
                 f"{cov['M']*100:.1f}%",
                 f"{cov['Y']*100:.1f}%",
                 f"{cov['K']*100:.1f}%",
                 f"{p['ink_cost']:.2f}",
-                f"{cov['color_frac']*100:.2f}% · {'Color' if p['is_color'] else 'B&W'}",
+                f"{p['page_cost']:.2f}",
             ]
             for col, val in enumerate(values):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if col == 6:
+                    tip = f"Color area {cov['color_frac']*100:.2f}% ({'Color' if p['is_color'] else 'B&W'})"
+                    if p["topup"] > 0:
+                        tip = (f"Below the minimum price, so {p['total']:.2f} is charged "
+                               f"(calculated {p['page_cost']:.2f})\n") + tip
+                    item.setToolTip(tip)
                 table.setItem(i, col, item)
 
         table.setMinimumHeight(min(220, 40 + 28 * len(result["per_page"])))
@@ -597,6 +763,12 @@ class CalculateTab(QWidget):
         if not self.resolved_pdf_path:
             QMessageBox.information(self, "Can't print", "No real PDF available for this document (install LibreOffice for .docx printing).")
             return
+        if self._selected_pages() != getattr(self, "print_pages", None):
+            QMessageBox.information(
+                self, "Pages changed",
+                "The page list changed since the last calculation. Press Calculate first so the price matches, then print.",
+            )
+            return
         names = [os.path.basename(p) for p in self.sources]
         job_name = names[0] if len(names) == 1 else f"{len(names)} files"
         print_pdf(
@@ -605,4 +777,5 @@ class CalculateTab(QWidget):
             color_mode=getattr(self, "print_mode", "color"),
             quality=getattr(self, "print_quality", "standard"),
             job_name=job_name,
+            pages=getattr(self, "print_pages", None),
         )

@@ -1,10 +1,11 @@
-from PyQt6.QtWidgets import QWidget, QLabel, QVBoxLayout
+from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QColor, QPen
 from PyQt6.QtCore import Qt, QTimer
 
-from style import BORDER, MUTED, ACCENT_LINE, PREVIEW_BG
+from style import BORDER, MUTED, PRIMARY, PREVIEW_BG
 
 PREVIEW_SIZE = (260, 340)
+SPINNER_SIZE = 64
 
 
 def pil_to_qpixmap(pil_img):
@@ -12,6 +13,49 @@ def pil_to_qpixmap(pil_img):
     data = pil_img.tobytes("raw", "RGB")
     qimg = QImage(data, pil_img.width, pil_img.height, pil_img.width * 3, QImage.Format.Format_RGB888)
     return QPixmap.fromImage(qimg)
+
+
+class Spinner(QWidget):
+    """Small rotating loader. It's its own tiny widget, so each frame only repaints 64x64 pixels."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(SPINNER_SIZE, SPINNER_SIZE)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._step = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self.hide()
+
+    def start(self):
+        self._step = 0
+        self._timer.start(80)  # about 12 frames per second is plenty for a spinner
+        self.show()
+        self.raise_()
+
+    def stop(self):
+        self._timer.stop()
+        self.hide()
+
+    def _tick(self):
+        self._step = (self._step + 1) % 12
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 235))
+        p.drawEllipse(0, 0, SPINNER_SIZE, SPINNER_SIZE)
+
+        p.translate(SPINNER_SIZE / 2, SPINNER_SIZE / 2)
+        p.rotate(self._step * 30)
+        for i in range(12):  # 12 spokes, the "tail" fades out
+            color = QColor(PRIMARY)
+            color.setAlpha(40 + int(215 * i / 11))
+            p.setBrush(color)
+            p.drawRoundedRect(-3, -25, 6, 11, 3, 3)
+            p.rotate(30)
 
 
 class PreviewWidget(QWidget):
@@ -22,10 +66,9 @@ class PreviewWidget(QWidget):
         self._pixmap = None
         self._placeholder_text = "No file selected"
         self._scanning = False
-        self._scan_y = 0
 
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._advance)
+        self.spinner = Spinner(self)
+        self.spinner.move((PREVIEW_SIZE[0] - SPINNER_SIZE) // 2, (PREVIEW_SIZE[1] - SPINNER_SIZE) // 2)
 
     # ---------------- content ----------------
 
@@ -41,29 +84,22 @@ class PreviewWidget(QWidget):
         self._pixmap = pil_to_qpixmap(pil_img)
         self.update()
 
-    # ---------------- scanning animation ----------------
+    # ---------------- loading animation ----------------
 
     def start_scan(self):
         self._scanning = True
-        self._scan_y = 0
-        self._timer.start(25)
+        self.spinner.start()
+        self.update()  # one repaint to dim the page; the spinner repaints itself after that
 
     def stop_scan(self):
         self._scanning = False
-        self._timer.stop()
-        self.update()
-
-    def _advance(self):
-        self._scan_y += 9
-        if self._scan_y > self.height():
-            self._scan_y = 0  # loop back to the top for long-running files
+        self.spinner.stop()
         self.update()
 
     # ---------------- painting ----------------
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         w, h = self.width(), self.height()
         painter.fillRect(0, 0, w, h, QColor(PREVIEW_BG))
@@ -77,9 +113,8 @@ class PreviewWidget(QWidget):
         else:
             painter.setPen(QColor(MUTED))
             painter.drawText(self.rect().adjusted(15, 0, -15, 0),
-                              Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
-                              self._placeholder_text)
+                             Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                             self._placeholder_text)
 
-        if self._scanning:
-            painter.setPen(QPen(QColor(ACCENT_LINE), 3))
-            painter.drawLine(4, self._scan_y, w - 4, self._scan_y)
+        if self._scanning:  # dim the page while it's being scanned
+            painter.fillRect(1, 1, w - 2, h - 2, QColor(255, 255, 255, 120))

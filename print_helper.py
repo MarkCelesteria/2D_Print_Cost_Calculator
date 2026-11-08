@@ -5,6 +5,8 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 import fitz
 import numpy as np
 
+from analyzer import format_page_ranges
+
 PRINT_DPI = 300
 
 
@@ -13,10 +15,12 @@ def _orientation(page):
     return QPageLayout.Orientation.Landscape if r.width > r.height else QPageLayout.Orientation.Portrait
 
 
-def _paint_document(printer, doc, grayscale, threshold=False):
+def _paint_document(printer, doc, grayscale, threshold=False, only_pages=None):
     """Draw every page; landscape pages get a landscape sheet, portrait pages a portrait one."""
     pages = list(range(len(doc)))
-    if printer.printRange() == QPrinter.PrintRange.PageRange and printer.fromPage() > 0:
+    if only_pages:
+        pages = [n - 1 for n in only_pages if 1 <= n <= len(doc)] or pages
+    elif printer.printRange() == QPrinter.PrintRange.PageRange and printer.fromPage() > 0:
         first = max(1, printer.fromPage())
         last = min(len(doc), printer.toPage() or len(doc))
         pages = list(range(first - 1, last)) or pages
@@ -62,18 +66,22 @@ def _paint_document(printer, doc, grayscale, threshold=False):
 
 
 def print_pdf(pdf_path, parent=None, paper=None, color_mode="color", quality="standard",
-              job_name="Print Cost Calculator"):
+              job_name="Print Cost Calculator", pages=None):
     grayscale = color_mode != "color"
     notes = []
     if grayscale:
         notes.append("Color mode: set it to Grayscale (or Black & white) in the print window so only black ink is used.")
     if quality in ("draft", "high"):
         notes.append(f"Quality: set the printer's quality to {quality.title()} in its Preferences so the printout matches the price.")
+    if pages:
+        notes.append(f"Pages: only {format_page_ranges(pages)} will print ({len(pages)} page(s)). "
+                     "The Pages box in the print window will still say All pages, because Windows "
+                     "can't show a custom list. Ignore it.")
     if notes:
         box = QMessageBox(parent)
         box.setIcon(QMessageBox.Icon.Information)
         box.setWindowTitle("Before you print")
-        box.setText("The app can't change these printer settings for you:")
+        box.setText("Before you print:")
         box.setInformativeText("\n\n".join(notes))
         box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
         if box.exec() != QMessageBox.StandardButton.Ok:
@@ -86,7 +94,7 @@ def print_pdf(pdf_path, parent=None, paper=None, color_mode="color", quality="st
 
     grayscale = color_mode != "color"
     printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-    printer.setDocName(job_name)
+    printer.setDocName(job_name + (f" (pages {format_page_ranges(pages)})" if pages else ""))
 
     if paper:
         size = QPageSize(QSizeF(paper["width_in"], paper["height_in"]), QPageSize.Unit.Inch, paper["name"])
@@ -98,14 +106,14 @@ def print_pdf(pdf_path, parent=None, paper=None, color_mode="color", quality="st
 
     def on_paint(p):
         try:
-            _paint_document(p, doc, grayscale, color_mode == "bw")
+            _paint_document(p, doc, grayscale, color_mode == "bw", pages)
         except Exception as e:
             QMessageBox.critical(parent, "Print error", str(e))
 
     printer.setPageOrientation(_orientation(doc[0]))
     printer.setColorMode(QPrinter.ColorMode.GrayScale if grayscale else QPrinter.ColorMode.Color)
     dialog = QPrintDialog(printer, parent)
-    dialog.setOption(QPrintDialog.PrintDialogOption.PrintPageRange, True)
+    dialog.setOption(QPrintDialog.PrintDialogOption.PrintPageRange, not pages)
     dialog.setMinMax(1, len(doc))
     if dialog.exec() == QPrintDialog.DialogCode.Accepted:
         if printer.colorMode() == QPrinter.ColorMode.GrayScale:

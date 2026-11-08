@@ -179,13 +179,13 @@ def analyze_document(path: str, progress_cb=None):
 
 def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float, percentages: dict,
                  min_price_per_page=None, discount_pct: float = 0.0, ink_multiplier: float = 1.0,
-                 min_price_color=None, color_threshold_pct: float = 0.5):
+                 min_price_color=None, color_threshold_pct: float = 0.5, page_numbers=None):
     per_page = []
     ink_total = 0.0
     min_topup = 0.0
     pct_factor = 1.0 + sum(percentages.values()) / 100.0
 
-    for cov in pages_coverage:
+    for idx, cov in enumerate(pages_coverage):
         page_ink_cost = sum(cov[ch] * ink_prices.get(ch, 0.0) for ch in "CMYK") * ink_multiplier
         is_color = cov.get("color_frac", 0.0) * 100.0 >= color_threshold_pct
         floor = min_price_color if (is_color and min_price_color) else min_price_per_page
@@ -197,7 +197,8 @@ def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float,
         ink_total += page_ink_cost
         min_topup += topup
         per_page.append({"coverage": cov, "ink_cost": page_ink_cost, "is_color": is_color,
-                         "topup": topup, "total": page_total + topup})
+                         "topup": topup, "page_cost": page_total, "total": page_total + topup,
+                         "page": page_numbers[idx] if page_numbers else idx + 1})
 
     num_pages = len(pages_coverage)
     paper_total = paper_price_per_sheet * num_pages
@@ -482,3 +483,126 @@ def cleanup_old_temp_dirs(max_age_hours: float = 24):
                 shutil.rmtree(d, ignore_errors=True)
         except OSError:
             pass
+
+
+
+# ---------------- page selection ----------------
+
+import re
+
+
+def parse_page_ranges(text, page_count):
+    """'1-6, 8-9, 11, 12' -> [1, 2, 3, 4, 5, 6, 8, 9, 11, 12]. Blank -> None (all pages)."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    hint = f"Use page numbers like 1-6, 8-9, 11, 12 (this file has {page_count} page(s))."
+    text = text.replace("–", "-").replace("—", "-")
+    text = re.sub(r"\s*-\s*", "-", text)
+    pages = set()
+    for part in re.split(r"[,;\s]+", text):
+        if not part:
+            continue
+        try:
+            if "-" in part:
+                a, b = part.split("-", 1)
+                start, end = int(a), int(b)
+            else:
+                start = end = int(part)
+        except ValueError:
+            raise ValueError(f'Can\'t read "{part}". {hint}')
+        if start > end:
+            raise ValueError(f'"{part}" goes backwards. {hint}')
+        if start < 1 or end > page_count:
+            raise ValueError(f'"{part}" is outside the document. {hint}')
+        pages.update(range(start, end + 1))
+    return sorted(pages) or None
+
+
+def format_page_ranges(pages):
+    """[1, 2, 3, 5, 7, 8] -> '1-3, 5, 7-8'."""
+    out, start, prev = [], None, None
+    for n in sorted(pages):
+        if start is None:
+            start = prev = n
+        elif n == prev + 1:
+            prev = n
+        else:
+            out.append(f"{start}-{prev}" if prev > start else str(start))
+            start = prev = n
+    if start is not None:
+        out.append(f"{start}-{prev}" if prev > start else str(start))
+    return ", ".join(out)
+
+
+# ---------------- paper size detection ----------------
+
+def get_document_page_size(pdf_path: str, sample_pages: int = 50):
+    """Most common page size in the PDF as (short, long) inches, or None."""
+    if fitz is None:
+        return None
+    doc = fitz.open(pdf_path)
+    try:
+        counts = {}
+        for i in range(min(len(doc), sample_pages)):
+            r = doc[i].rect
+            key = tuple(sorted((round(r.width / 72, 2), round(r.height / 72, 2))))
+            counts[key] = counts.get(key, 0) + 1
+        return max(counts.items(), key=lambda kv: kv[1])[0] if counts else None
+    finally:
+        doc.close()
+
+
+def closest_paper(doc_size, paper_sizes, tolerance: float = 0.15):
+    """Index of the paper closest to doc_size (short, long inches), or None if none is within tolerance."""
+    best, best_d = None, None
+    for i, p in enumerate(paper_sizes):
+        short, long_ = sorted((p["width_in"], p["height_in"]))
+        d = max(abs(short - doc_size[0]), abs(long_ - doc_size[1]))
+        if best_d is None or d < best_d:
+            best, best_d = i, d
+    return best if best_d is not None and best_d <= tolerance else None
+
+
+# ---------------- preview on the selected paper ----------------
+
+from PIL import ImageDraw
+
+
+def get_pdf_page_inches(pdf_path: str, page_index: int):
+    """Physical size of one page as (width, height) in inches, or None."""
+    if fitz is None:
+        return None
+    doc = fitz.open(pdf_path)
+    try:
+        if page_index < 0 or page_index >= len(doc):
+            return None
+        r = doc[page_index].rect
+        return (r.width / 72.0, r.height / 72.0)
+    finally:
+        doc.close()
+
+
+def fit_page_to_paper(img, page_inches, paper_w_in, paper_h_in, max_size=None):
+    """Show a page the way it prints on a sheet of this paper: scaled to fit, centred, on a sheet-shaped canvas."""
+    if img is None or not page_inches:
+        return img
+    dw, dh = page_inches
+    short, long_ = sorted((paper_w_in, paper_h_in))
+    landscape = dw > dh
+    sw, sh = (long_, short) if landscape else (short, long_)
+    s = min(sw / dw, sh / dh)
+    ppi = img.width / dw
+    W, H = max(1, round(sw * ppi)), max(1, round(sh * ppi))
+    pw, ph = max(1, round(dw * s * ppi)), max(1, round(dh * s * ppi))
+
+    page = img.convert("RGB").resize((pw, ph), Image.LANCZOS)
+    sheet = Image.new("RGB", (W, H), "white")
+    x, y = (W - pw) // 2, (H - ph) // 2
+    sheet.paste(page, (x, y))
+    draw = ImageDraw.Draw(sheet)
+    draw.rectangle([x, y, x + pw - 1, y + ph - 1], outline=(190, 198, 214))
+    draw.rectangle([0, 0, W - 1, H - 1], outline=(150, 160, 180))
+    if max_size:
+        sheet.thumbnail(max_size, Image.LANCZOS)
+    return sheet

@@ -35,13 +35,13 @@
     "profit": 10.0
   },
   "asked_about_autostart": true,
-  "min_price_per_page": null,
+  "min_price_per_page": 3.0,
   "default_discount": 0.0,
   "quality_multipliers": {
     "draft": 0.7,
     "standard": 1.0,
     "high": 2.8
   },
-  "min_price_color": null,
+  "min_price_color": 5.0,
   "color_threshold_pct": 0.5
 }
