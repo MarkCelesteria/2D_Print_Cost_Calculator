@@ -196,7 +196,8 @@ class SettingsTab(QWidget):
         rules_header = QLabel("Pricing Rules")
         rules_header.setObjectName("cardHeader")
         rules_layout.addWidget(rules_header, 0, 0, 1, 4)
-        rules_sub = QLabel("Minimum prices are per page, checked after all percentages. Leave blank to turn off. "
+        rules_sub = QLabel("Each page has a minimum, added up across the document (e.g. 2 color at 5 + 1 B&W at 3 = 13). "
+                           "If the total after all percentages is below that sum, it is topped up to it. Leave blank to turn off. "
                            "If only B&W is set, it also applies to color pages. Discount is taken off the final total.")
         rules_sub.setWordWrap(True)
         rules_sub.setObjectName("muted")

@@ -182,7 +182,8 @@ def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float,
                  min_price_color=None, color_threshold_pct: float = 0.5, page_numbers=None):
     per_page = []
     ink_total = 0.0
-    min_topup = 0.0
+    min_required = 0.0   # sum of each page's minimum (color pages use the color minimum)
+    calculated_total = 0.0
     pct_factor = 1.0 + sum(percentages.values()) / 100.0
 
     for idx, cov in enumerate(pages_coverage):
@@ -190,15 +191,18 @@ def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float,
         is_color = cov.get("color_frac", 0.0) * 100.0 >= color_threshold_pct
         floor = min_price_color if (is_color and min_price_color) else min_price_per_page
 
-        # page price after all percentages, then the minimum is applied to that
         page_total = (page_ink_cost + paper_price_per_sheet) * pct_factor
-        topup = max(0.0, floor - page_total) if floor else 0.0
 
         ink_total += page_ink_cost
-        min_topup += topup
+        calculated_total += page_total
+        min_required += floor or 0.0
         per_page.append({"coverage": cov, "ink_cost": page_ink_cost, "is_color": is_color,
-                         "topup": topup, "page_cost": page_total, "total": page_total + topup,
+                         "page_cost": page_total, "total": page_total,
                          "page": page_numbers[idx] if page_numbers else idx + 1})
+
+    # The minimum only applies to the whole job: if the calculated total (after all
+    # percentages) doesn't reach the sum of the per-page minimums, top up the difference.
+    min_topup = max(0.0, min_required - calculated_total)
 
     num_pages = len(pages_coverage)
     paper_total = paper_price_per_sheet * num_pages

@@ -746,11 +746,7 @@ class CalculateTab(QWidget):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if col == 6:
-                    tip = f"Color area {cov['color_frac']*100:.2f}% ({'Color' if p['is_color'] else 'B&W'})"
-                    if p["topup"] > 0:
-                        tip = (f"Below the minimum price, so {p['total']:.2f} is charged "
-                               f"(calculated {p['page_cost']:.2f})\n") + tip
-                    item.setToolTip(tip)
+                    item.setToolTip(f"Color area {cov['color_frac']*100:.2f}% ({'Color' if p['is_color'] else 'B&W'})")
                 table.setItem(i, col, item)
 
         table.setMinimumHeight(min(220, 40 + 28 * len(result["per_page"])))
