@@ -648,6 +648,10 @@ class CalculateTab(QWidget):
         layout.addLayout(r)
 
     def _render_results(self, result, paper, is_approx):
+        cb = getattr(self, "on_calculated", None)
+        if cb:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(800, cb)
         summary_card, summary_layout = card()
         header_row = QHBoxLayout()
         header = QLabel(f"{result['num_pages']} page(s) — {paper['name']}")

@@ -1,7 +1,18 @@
 import json
 import os
+import sys
 
-SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+
+def _app_data_dir():
+    """Next to the code when run from source; in AppData for the packaged exe (its own folder is a temp dir)."""
+    if getattr(sys, "frozen", False):
+        path = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "PrintCostCalculator")
+        os.makedirs(path, exist_ok=True)
+        return path
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+SETTINGS_PATH = os.path.join(_app_data_dir(), "settings.json")
 
 DEFAULT_SETTINGS = {
     "paper_sizes": [
