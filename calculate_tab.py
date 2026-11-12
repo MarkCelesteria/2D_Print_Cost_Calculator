@@ -5,9 +5,10 @@ from PyQt6.QtWidgets import (
     QFrame, QComboBox, QLineEdit, QFileDialog, QMessageBox, QTableWidget,
     QTableWidgetItem, QHeaderView, QScrollArea, QInputDialog
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSize
 
 import pricing
+from icons import make_icon
 from preview_widget import PreviewWidget
 from worker import AnalyzeWorker, LoadDocumentWorker
 from analyzer import (render_pdf_page, apply_preview_mode, compute_cost, cleanup_temp_dirs,
@@ -554,6 +555,7 @@ class CalculateTab(QWidget):
         mode = mode_map[self.mode_combo.currentText()]
         quality = self.quality_combo.currentText().lower()
         ink_multiplier = self.settings["quality_multipliers"].get(quality, 1.0)
+        black_mix = self.settings.get("high_black_mix", 0.0) / 100 if quality == "high" else 0.0
         self.print_mode = mode
         self.print_quality = quality
         self._calc_load_id = self._load_id
@@ -569,6 +571,7 @@ class CalculateTab(QWidget):
                 min_price_per_page=self.settings.get("min_price_per_page"),
                 min_price_color=self.settings.get("min_price_color"),
                 color_threshold_pct=self.settings.get("color_threshold_pct", 0.5),
+                black_mix=black_mix,
             )
             self.status_label.setText("Done (reused the earlier scan)." + (" (approximate estimate)" if cached_approx else ""))
             self._render_results(result, self.paper, cached_approx)
@@ -581,7 +584,7 @@ class CalculateTab(QWidget):
             ink_multiplier=ink_multiplier,
             min_price_color=self.settings.get("min_price_color"),
             color_threshold_pct=self.settings.get("color_threshold_pct", 0.5),
-            pages=selected_pages,
+            pages=selected_pages, black_mix=black_mix,
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.succeeded.connect(self._on_success)
@@ -668,6 +671,8 @@ class CalculateTab(QWidget):
         summary_layout.addWidget(counts)
 
         ink_label = "Ink cost"
+        if result.get("black_mix"):
+            ink_label += " (rich black)"
         if result["ink_multiplier"] != 1:
             ink_label += f" (×{result['ink_multiplier']:g})"
         self._row(summary_layout, ink_label, f"{result['ink_total']:.2f}")
@@ -703,29 +708,26 @@ class CalculateTab(QWidget):
         total_row.addWidget(total_value)
         summary_layout.addLayout(total_row)
 
-        if self.settings.get("discounts"):
-            md = self.manual_discount
-            disc_btn = QPushButton(f"🏷 {md['name']} (change)" if md else "🏷 Apply Discount")
-            disc_btn.setObjectName("secondary")
-            disc_btn.clicked.connect(self._choose_discount)
-            summary_layout.addWidget(disc_btn)
-
-        print_btn = QPushButton("🖨 Print")
-        print_btn.setObjectName("secondary")
-        print_btn.clicked.connect(self._on_print_clicked)
-        summary_layout.addWidget(print_btn)
-
-        receipt_data = self._receipt_data(result, paper)
-        receipt_btn = QPushButton("🧾 View Receipt")
-        receipt_btn.setObjectName("secondary")
-        receipt_btn.clicked.connect(lambda: ReceiptDialog(receipt_data, self).exec())
-        summary_layout.addWidget(receipt_btn)
-
         if is_approx:
             note = QLabel("Approximate: .docx text coverage is estimated (install LibreOffice for exact results).")
             note.setObjectName("muted")
             note.setWordWrap(True)
             summary_layout.addWidget(note)
+
+        summary_layout.addSpacing(4)
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        if self.settings.get("discounts"):
+            md = self.manual_discount
+            name = md["name"] if md and len(md["name"]) <= 14 else (md["name"][:13] + "…" if md else "")
+            disc_btn = self._action_button(name or "Apply Discount", "tag", self._choose_discount)
+            disc_btn.setToolTip("Choose a discount")
+            actions.addWidget(disc_btn, 1)
+        actions.addWidget(self._action_button("Print", "printer", self._on_print_clicked), 1)
+        receipt_data = self._receipt_data(result, paper)
+        actions.addWidget(self._action_button(
+            "View Receipt", "receipt", lambda: ReceiptDialog(receipt_data, self).exec()), 1)
+        summary_layout.addLayout(actions)
 
         self.results_layout.addWidget(summary_card)
 
@@ -763,11 +765,22 @@ class CalculateTab(QWidget):
                     item.setToolTip(f"Color area {cov['color_frac']*100:.2f}% ({'Color' if p['is_color'] else 'B&W'})")
                 table.setItem(i, col, item)
 
-        table.setMinimumHeight(min(220, 40 + 28 * len(result["per_page"])))
+        rows = min(table.rowCount(), 8)
+        table.setFixedHeight(table.horizontalHeader().sizeHint().height()
+                             + sum(table.rowHeight(i) for i in range(rows)) + 2 * table.frameWidth())
         table_layout.addWidget(table)
 
         self.results_layout.addWidget(table_card)
         self.results_layout.addStretch()
+
+    def _action_button(self, text, icon, slot):
+        btn = QPushButton(text)
+        btn.setObjectName("secondary")
+        btn.setIcon(make_icon(icon))
+        btn.setIconSize(QSize(18, 18))
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.clicked.connect(lambda: slot())
+        return btn
 
     def _apply_discounts(self, result):
         """Bulk (automatic) + the chosen named discount, both taken off the gross total."""

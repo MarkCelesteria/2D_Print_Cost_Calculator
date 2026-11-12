@@ -16,8 +16,6 @@ INK = (0.06, 0.11, 0.18)
 MUTED = (0.39, 0.45, 0.55)
 LOGO = [(0.0, 0.68, 0.94), (0.93, 0.0, 0.55), (1.0, 0.95, 0.0), (0.14, 0.12, 0.13)]
 MODES = {"color": "Color", "grayscale": "Grayscale", "bw": "Black & White"}
-CATS = [("labor", "Labor"), ("maintenance", "Maintenance"), ("electricity", "Electricity"),
-        ("spoilage", "Spoilage"), ("printer", "Printer"), ("profit", "Profit")]
 
 
 def receipt_number(when):
@@ -84,17 +82,42 @@ def _draw(page, d):
     row("Color / B&W", f"{r['color_pages']} / {r['num_pages'] - r['color_pages']}")
     rule()
 
+    # per-page color use (% of each ink) and price (ink + paper)
+    edges = [M + 78, M + 116, M + 154, M + 192, W - M]
+
+    def cells(vals, font="helv", color=INK, size=8):
+        nonlocal y
+        page.insert_text((M, y), vals[0], fontname=font, fontsize=size, color=color)
+        for x, v in zip(edges, vals[1:]):
+            w = fitz.get_text_length(v, fontname=font, fontsize=size)
+            page.insert_text((x - w, y), v, fontname=font, fontsize=size, color=color)
+        y += size * 1.65
+
+    center("Color use per page (%)", 9, "hebo", gap=1.7)
+    cells(["Page", "C", "M", "Y", "K", "Price"], "hebo", MUTED)
+    for p in r["per_page"][:150]:
+        c = p["coverage"]
+        cells([str(p["page"])] + [f"{c[k] * 100:.1f}" for k in "CMYK"] + [f"{p['page_cost']:.2f}"])
+    if len(r["per_page"]) > 150:
+        center(f"+ {len(r['per_page']) - 150} more pages", 7, color=MUTED)
+    rule(dashed=False)
+    if r["min_topup"] > 0:
+        cells(["Min. mark-up", "", "", "", "", f"{r['min_topup']:.2f}"])
+    page_total = sum(p["page_cost"] for p in r["per_page"]) + r["min_topup"]
+    cells(["Total", "", "", "", "", f"{page_total:.2f}"], "hebo")
+    y -= 4
+    rule()
+
     ink_label = "Ink" + (f" (x{r['ink_multiplier']:g})" if r["ink_multiplier"] != 1 else "")
     row(ink_label, f"{r['ink_total']:.2f}", label_color=INK)
     row("Paper", f"{r['paper_total']:.2f}", label_color=INK)
     row("Subtotal", f"{r['subtotal']:.2f}", font="hebo", label_color=INK)
     y += 3
-    for key, label in CATS:
-        pct = r["percentages"].get(key, 0)
-        if pct:
-            row(f"{label} ({pct:g}%)", f"{r['category_amounts'].get(key, 0):.2f}")
+    handling = sum(r["category_amounts"].values())
+    if handling > 0:
+        row("Service & production handling", f"{handling:.2f}")
     if r["min_topup"] > 0:
-        row("Minimum price top-up", f"{r['min_topup']:.2f}")
+        row("Minimum price mark-up", f"{r['min_topup']:.2f}")
     for label, amount in r.get("discount_lines", []):
         row(label, f"-{amount:.2f}")
     rule(dashed=False)
@@ -109,7 +132,7 @@ def _draw(page, d):
 
 def build_receipt_pdf(d):
     probe = fitz.open()
-    height = _draw(probe.new_page(width=W, height=2000), d)  # first pass: measure
+    height = _draw(probe.new_page(width=W, height=14400), d)  # first pass: measure
     probe.close()
     doc = fitz.open()
     _draw(doc.new_page(width=W, height=height), d)  # second pass: exact height
@@ -158,14 +181,14 @@ class ReceiptDialog(QDialog):
 
     def _download(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, "Download receipt", f"{self.number}.pdf", "PDF (*.pdf);;PNG image (*.png)")
+            self, "Download receipt", f"{self.number}.png", "PNG image (*.png);;PDF (*.pdf)")
         if not path:
             return
         if not os.path.splitext(path)[1]:
-            path += ".pdf"
+            path += ".png"
         try:
             if path.lower().endswith(".png"):
-                self._pixmap(3.0).save(path, "PNG")
+                self._pixmap(4.0).save(path, "PNG")
             else:
                 with open(path, "wb") as f:
                     f.write(self.pdf)

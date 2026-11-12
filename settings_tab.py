@@ -227,6 +227,14 @@ class SettingsTab(QWidget):
         gen_header.setObjectName("cardHeader")
         gen_layout.addWidget(gen_header)
 
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Receipt name"))
+        self.shop_input = QLineEdit(self.settings.get("shop_name", "Print Cost Calculator"))
+        self.shop_input.setPlaceholderText("Name shown at the top of receipts")
+        self.shop_input.setMaxLength(40)
+        name_row.addWidget(self.shop_input, 1)
+        gen_layout.addLayout(name_row)
+
         if sys.platform.startswith("win"):
             self.autostart_box = ToggleSwitch("Open automatically when my PC turns on")
             self.autostart_box.setChecked(autostart.is_autostart_enabled())
@@ -256,7 +264,6 @@ class SettingsTab(QWidget):
         self.paper_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.paper_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.paper_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.paper_table.setMinimumHeight(190)
         paper_layout.addWidget(self.paper_table)
         self._refresh_paper_table()
 
@@ -334,6 +341,14 @@ class SettingsTab(QWidget):
             field.setFixedWidth(70)
             self.quality_inputs[key] = field
             q_layout.addWidget(field, 2, i * 2 + 1)
+
+        q_layout.addWidget(QLabel("High: black mix %"), 3, 0)
+        self.black_mix_input = QLineEdit(str(self.settings.get("high_black_mix", 60.0)))
+        self.black_mix_input.setFixedWidth(70)
+        self.black_mix_input.setToolTip(
+            "On High quality, this % of each page's black is also charged as Cyan, Magenta and Yellow ink "
+            "(0 = plain black).")
+        q_layout.addWidget(self.black_mix_input, 3, 1)
 
         # ---- Pricing rules ----
         rules_card, rules_layout = card(QGridLayout)
@@ -434,7 +449,6 @@ class SettingsTab(QWidget):
         t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         t.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        t.setMinimumHeight(120)
         return t
 
     def _button_row(self, add, edit, delete):
@@ -459,6 +473,12 @@ class SettingsTab(QWidget):
                     item = QTableWidgetItem(val)
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                     table.setItem(i, col, item)
+            self._fit_table(table)
+
+    def _fit_table(self, table, max_rows=6):
+        rows = min(table.rowCount(), max_rows)
+        body = sum(table.rowHeight(i) for i in range(rows)) or table.verticalHeader().defaultSectionSize()
+        table.setFixedHeight(table.horizontalHeader().sizeHint().height() + body + 2 * table.frameWidth())
 
     def _add_item(self, key, dlg_cls):
         dlg = dlg_cls(self)
@@ -490,6 +510,7 @@ class SettingsTab(QWidget):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.paper_table.setItem(i, col, item)
+        self._fit_table(self.paper_table)
 
     def _add_paper(self):
         dlg = PaperSizeDialog(self)
@@ -532,6 +553,7 @@ class SettingsTab(QWidget):
         self.settings["color_threshold_pct"] = defaults["color_threshold_pct"]
         self.discount_input.setText(str(self.settings["default_discount"]))
         self.settings["quality_multipliers"] = defaults["quality_multipliers"]
+        self.settings["high_black_mix"] = defaults["high_black_mix"]
 
         pricing.save_settings(self.settings)
         self.on_save()
@@ -544,6 +566,7 @@ class SettingsTab(QWidget):
         self.min_price_input.setText(_opt_str(self.settings["min_price_per_page"]))
         self.min_price_color_input.setText(_opt_str(self.settings["min_price_color"]))
         self.color_threshold_input.setText(str(self.settings["color_threshold_pct"]))
+        self.black_mix_input.setText(str(self.settings["high_black_mix"]))
         self.discount_input.setText(str(self.settings["default_discount"]))
         for key, field in self.quality_inputs.items():
             field.setText(str(self.settings["quality_multipliers"][key]))
@@ -564,6 +587,11 @@ class SettingsTab(QWidget):
             if not 0 <= threshold <= 100:
                 raise ValueError
             self.settings["color_threshold_pct"] = threshold
+            self.settings["shop_name"] = self.shop_input.text().strip() or "Print Cost Calculator"
+            mix = float(self.black_mix_input.text().strip() or 0)
+            if not 0 <= mix <= 100:
+                raise ValueError
+            self.settings["high_black_mix"] = mix
             for key, field in self.quality_inputs.items():
                 mult = float(field.text())
                 if mult <= 0:

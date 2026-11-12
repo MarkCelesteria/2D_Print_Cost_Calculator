@@ -179,15 +179,19 @@ def analyze_document(path: str, progress_cb=None):
 
 def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float, percentages: dict,
                  min_price_per_page=None, discount_pct: float = 0.0, ink_multiplier: float = 1.0,
-                 min_price_color=None, color_threshold_pct: float = 0.5, page_numbers=None):
+                 min_price_color=None, color_threshold_pct: float = 0.5, page_numbers=None,
+                 black_mix: float = 0.0):
     per_page = []
     ink_total = 0.0
-    min_required = 0.0   # sum of each page's minimum (color pages use the color minimum)
+    min_required = 0.0
     calculated_total = 0.0
     pct_factor = 1.0 + sum(percentages.values()) / 100.0
 
     for idx, cov in enumerate(pages_coverage):
-        page_ink_cost = sum(cov[ch] * ink_prices.get(ch, 0.0) for ch in "CMYK") * ink_multiplier
+        boost = cov["K"] * black_mix
+        page_ink_cost = sum(
+            min(1.0, cov[ch] + (boost if ch in "CMY" else 0.0)) * ink_prices.get(ch, 0.0) for ch in "CMYK"
+        ) * ink_multiplier
         is_color = cov.get("color_frac", 0.0) * 100.0 >= color_threshold_pct
         floor = min_price_color if (is_color and min_price_color) else min_price_per_page
 
@@ -218,6 +222,7 @@ def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float,
         "per_page": per_page,
         "ink_total": ink_total,
         "ink_multiplier": ink_multiplier,
+        "black_mix": black_mix,
         "paper_total": paper_total,
         "min_topup": min_topup,
         "subtotal": subtotal,
