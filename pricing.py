@@ -38,6 +38,7 @@ DEFAULT_SETTINGS = {
     "high_black_mix": 60.0,
     "min_price_per_page": None,
     "min_price_color": None,
+    "max_price_per_page": None,
     "color_threshold_pct": 0.5,
     "shop_name": "Print Cost Calculator",
     "has_permit": False,

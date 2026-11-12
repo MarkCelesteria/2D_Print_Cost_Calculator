@@ -249,7 +249,7 @@ class PermitRulesDialog(QDialog):
         else:
             self._flash.stop()
             self._flash.start()
-            
+
 
 class SettingsTab(QWidget):
     def __init__(self, settings, on_save, on_check_update=None, parent=None):
@@ -450,13 +450,20 @@ class SettingsTab(QWidget):
         self.min_price_color_input.setFixedWidth(80)
         rules_layout.addWidget(self.min_price_color_input, 2, 3)
 
-        rules_layout.addWidget(QLabel("Color page threshold %"), 3, 0)
+        rules_layout.addWidget(QLabel("Max price / page"), 3, 0)
+        self.max_price_input = QLineEdit(_opt_str(self.settings.get("max_price_per_page")))
+        self.max_price_input.setPlaceholderText("off")
+        self.max_price_input.setFixedWidth(80)
+        self.max_price_input.setToolTip("The job total can't go above this price × number of pages. Leave blank for no max.")
+        rules_layout.addWidget(self.max_price_input, 3, 1)
+
+        rules_layout.addWidget(QLabel("Color page threshold %"), 3, 2)
         self.color_threshold_input = QLineEdit(str(self.settings.get("color_threshold_pct", 0.5)))
         self.color_threshold_input.setFixedWidth(80)
         self.color_threshold_input.setToolTip(
             "A page counts as Color only if at least this % of it is colored. "
             "Raise it to ignore tiny colored items.")
-        rules_layout.addWidget(self.color_threshold_input, 3, 1)
+        rules_layout.addWidget(self.color_threshold_input, 3, 3)
 
         # ---- Discounts ----
         disc_card, disc_layout = card()
@@ -633,6 +640,7 @@ class SettingsTab(QWidget):
         self.settings["default_percentages"] = defaults["default_percentages"]
         self.settings["min_price_per_page"] = defaults["min_price_per_page"]
         self.settings["min_price_color"] = defaults["min_price_color"]
+        self.settings["max_price_per_page"] = defaults["max_price_per_page"]
         self.settings["color_threshold_pct"] = defaults["color_threshold_pct"]
         self.settings["quality_multipliers"] = defaults["quality_multipliers"]
         self.settings["high_black_mix"] = defaults["high_black_mix"]
@@ -647,6 +655,7 @@ class SettingsTab(QWidget):
             field.setText(str(self.settings["default_percentages"][key]))
         self.min_price_input.setText(_opt_str(self.settings["min_price_per_page"]))
         self.min_price_color_input.setText(_opt_str(self.settings["min_price_color"]))
+        self.max_price_input.setText(_opt_str(self.settings["max_price_per_page"]))
         self.color_threshold_input.setText(str(self.settings["color_threshold_pct"]))
         self.black_mix_input.setText(str(self.settings["high_black_mix"]))
         for key, field in self.quality_inputs.items():
@@ -664,6 +673,8 @@ class SettingsTab(QWidget):
             self.settings["min_price_per_page"] = float(raw) if raw else None
             raw_c = self.min_price_color_input.text().strip()
             self.settings["min_price_color"] = float(raw_c) if raw_c else None
+            raw_max = self.max_price_input.text().strip()
+            self.settings["max_price_per_page"] = float(raw_max) if raw_max else None
             threshold = float(self.color_threshold_input.text().strip() or 0)
             if not 0 <= threshold <= 100:
                 raise ValueError

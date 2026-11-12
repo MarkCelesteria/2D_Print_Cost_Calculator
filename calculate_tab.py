@@ -597,6 +597,7 @@ class CalculateTab(QWidget):
                 min_price_color=self.settings.get("min_price_color"),
                 color_threshold_pct=self.settings.get("color_threshold_pct", 0.5),
                 black_mix=black_mix,
+                max_price_per_page=self.settings.get("max_price_per_page"),
             )
             self.status_label.setText("Done (reused the earlier scan)." + (" (approximate estimate)" if cached_approx else ""))
             self._render_results(result, self.paper, cached_approx)
@@ -610,6 +611,7 @@ class CalculateTab(QWidget):
             min_price_color=self.settings.get("min_price_color"),
             color_threshold_pct=self.settings.get("color_threshold_pct", 0.5),
             pages=selected_pages, black_mix=black_mix,
+            max_price=self.settings.get("max_price_per_page"),
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.succeeded.connect(self._on_success)
@@ -715,6 +717,9 @@ class CalculateTab(QWidget):
 
         if result["min_topup"] > 0:
             self._row(summary_layout, "Minimum price top-up", f"{result['min_topup']:.2f}", muted=True)
+
+        if result.get("max_cut", 0) > 0:
+            self._row(summary_layout, "Max price cap", f"-{result['max_cut']:.2f}", muted=True)
 
         for label, amount in result["discount_lines"]:
             self._row(summary_layout, label, f"-{amount:.2f}", muted=True)

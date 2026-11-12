@@ -108,7 +108,10 @@ def _draw(page, d):
     rule(dashed=False)
     if r["min_topup"] > 0:
         cells(["Min. mark-up", "", "", "", "", f"{r['min_topup']:.2f}"])
-    page_total = sum(p["page_cost"] for p in r["per_page"]) + r["min_topup"]
+    max_cut = r.get("max_cut", 0)
+    if max_cut > 0:
+        cells(["Max price cap", "", "", "", "", f"-{max_cut:.2f}"])
+    page_total = sum(p["page_cost"] for p in r["per_page"]) + r["min_topup"] - max_cut
     cells(["Total", "", "", "", "", f"{page_total:.2f}"], "hebo")
     y -= 4
     rule()
@@ -123,6 +126,8 @@ def _draw(page, d):
         row("Service & production handling", f"{handling:.2f}")
     if r["min_topup"] > 0:
         row("Minimum price mark-up", f"{r['min_topup']:.2f}")
+    if max_cut > 0:
+        row("Max price cap", f"-{max_cut:.2f}")
     for label, amount in r.get("discount_lines", []):
         row(label, f"-{amount:.2f}")
     rule(dashed=False)

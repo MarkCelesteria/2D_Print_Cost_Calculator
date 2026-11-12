@@ -180,7 +180,7 @@ def analyze_document(path: str, progress_cb=None):
 def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float, percentages: dict,
                  min_price_per_page=None, discount_pct: float = 0.0, ink_multiplier: float = 1.0,
                  min_price_color=None, color_threshold_pct: float = 0.5, page_numbers=None,
-                 black_mix: float = 0.0):
+                 black_mix: float = 0.0, max_price_per_page=None):
     per_page = []
     ink_total = 0.0
     min_required = 0.0
@@ -214,6 +214,8 @@ def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float,
 
     category_amounts = {name: subtotal * (pct / 100.0) for name, pct in percentages.items()}
     gross = subtotal + sum(category_amounts.values()) + min_topup
+    max_cut = max(0.0, gross - max_price_per_page * num_pages) if max_price_per_page else 0.0
+    gross -= max_cut
     discount_amount = gross * (discount_pct / 100.0)
 
     return {
@@ -225,6 +227,7 @@ def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float,
         "black_mix": black_mix,
         "paper_total": paper_total,
         "min_topup": min_topup,
+        "max_cut": max_cut,
         "subtotal": subtotal,
         "percentages": percentages,
         "category_amounts": category_amounts,
