@@ -10,18 +10,18 @@ from PIL import Image, ImageOps
 from analyzer import make_temp_dir
 
 MAX_UNDO = 20
-MIN_SIZE = 8.0
+MIN_SIZE = 8.0          # smallest image side, in points
 EPS = 1e-3
-MARGIN = 18.0
+MARGIN = 18.0         # distance kept from the page edge by Top / Bottom / Left / Right (a printer-safe margin)
 
 
 class EditError(Exception):
     pass
 
 
-def _encode_image(path):
-    """Bytes PyMuPDF can embed. Keeps transparency (PNG) when the picture has it, otherwise JPEG."""
-    img = ImageOps.exif_transpose(Image.open(path))
+def _encode_image(source):
+    """Bytes PyMuPDF can embed, from a file path or raw picture bytes. Keeps transparency (PNG), else JPEG."""
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(source) if isinstance(source, (bytes, bytearray)) else source))
     img.thumbnail((2400, 2400), Image.LANCZOS)
     has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
     buf = io.BytesIO()
@@ -48,6 +48,7 @@ class PdfEditor:
         self.path = os.path.join(self.dir, "edited.pdf")
         shutil.copyfile(source_path, self.path)
         self._undo = []     # (snapshot file, state) pairs
+        self._redo = []
         self._n = 0
         self._edits = 0
         self.state = None   # anything the caller wants restored together with an undo
@@ -62,14 +63,19 @@ class PdfEditor:
     def can_undo(self):
         return bool(self._undo)
 
+    @property
+    def can_redo(self):
+        return bool(self._redo)
+
     def release(self):
         """Drop the undo copies (the edited file itself stays)."""
-        for p, _ in self._undo:
+        for p, _ in self._undo + self._redo:
             try:
                 os.remove(p)
             except OSError:
                 pass
         self._undo.clear()
+        self._redo.clear()
 
     # ---------------- reading ----------------
 
@@ -102,6 +108,12 @@ class PdfEditor:
     # ---------------- editing ----------------
 
     def _push(self):
+        for p, _ in self._redo:  # a new edit ends the redo line
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        self._redo.clear()
         snap = os.path.join(self.dir, f"undo{self._n}.pdf")
         self._n += 1
         shutil.copyfile(self.path, snap)
@@ -169,8 +181,9 @@ class PdfEditor:
     @staticmethod
     def _clamp(rect, page):
         pr = page.rect
-        w = min(max(rect.width, MIN_SIZE), pr.width)
-        h = min(max(rect.height, MIN_SIZE), pr.height)
+        k = min(1.0, pr.width / max(rect.width, 1e-6), pr.height / max(rect.height, 1e-6))
+        w = min(max(rect.width * k, MIN_SIZE), pr.width)
+        h = min(max(rect.height * k, MIN_SIZE), pr.height)
         x0 = min(max(rect.x0, 0), pr.width - w)
         y0 = min(max(rect.y0, 0), pr.height - h)
         return fitz.Rect(x0, y0, x0 + w, y0 + h)
@@ -250,6 +263,27 @@ class PdfEditor:
                 raise EditError("A document needs at least one page.")
             doc.delete_page(index)
 
+    def copy_image(self, index, image_idx, xref):
+        """(PNG bytes, width, height in points) of a placed picture, for the clipboard."""
+        with fitz.open(self.path) as doc:
+            page = self._page(doc, index)
+            infos = self._target(page, image_idx, xref)
+            r = fitz.Rect(infos[image_idx]["rect"])
+            buf = io.BytesIO()
+            self._xref_to_pil(doc, xref).save(buf, "PNG")
+        return buf.getvalue(), r.width, r.height
+
+    def move_to_page(self, src, image_idx, xref, dst, rect):
+        """Take a picture off page `src` and put it on page `dst` (may be the same page). Returns its new rect."""
+        with self._edit() as doc:
+            sp = self._page(doc, src)
+            dp = sp if dst == src else self._page(doc, dst)
+            infos = self._target(sp, image_idx, xref)
+            new = self._clamp(fitz.Rect(rect), dp)
+            self._remove(sp, infos, image_idx)
+            dp.insert_image(new, xref=xref, keep_proportion=False, overlay=True)
+        return tuple(new)
+
     def move_resize(self, index, image_idx, xref, rect):
         with self._edit() as doc:
             page = self._page(doc, index)
@@ -265,31 +299,52 @@ class PdfEditor:
             infos = self._target(page, image_idx, xref)
             self._remove(page, infos, image_idx)
 
-    def add_image(self, index, path, center=None):
-        """Insert a picture file, about 40% of the page wide, around `center` (points). Returns its rect."""
+    def add_image(self, index, source, center=None, size=None):
+        """Insert a picture (file path or bytes) around `center` (points). `size` = (w, h) in points, else
+        about 40% of the page wide. Returns its rect."""
         try:
-            data, iw, ih = _encode_image(path)
+            data, iw, ih = _encode_image(source)
         except Exception as e:
-            raise EditError(f"Couldn't read {os.path.basename(path)}: {e}")
+            name = os.path.basename(source) if isinstance(source, str) else "the picture"
+            raise EditError(f"Couldn't read {name}: {e}")
         with self._edit() as doc:
             page = self._page(doc, index)
             pr = page.rect
-            w = pr.width * 0.4
-            h = w * ih / iw
-            if h > pr.height * 0.6:
-                h = pr.height * 0.6
-                w = h * iw / ih
+            if size:
+                w, h = size
+            else:
+                w = pr.width * 0.4
+                h = w * ih / iw
+                if h > pr.height * 0.6:
+                    h = pr.height * 0.6
+                    w = h * iw / ih
             cx, cy = center or (pr.width / 2, pr.height / 2)
             rect = self._clamp(fitz.Rect(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2), page)
             page.insert_image(rect, stream=data, keep_proportion=False, overlay=True)
         return tuple(rect)
 
+    def _stash(self, stack):
+        snap = os.path.join(self.dir, f"h{self._n}.pdf")
+        self._n += 1
+        shutil.copyfile(self.path, snap)
+        stack.append((snap, self.state))
+
     def undo(self):
         if not self._undo:
             return False
+        self._stash(self._redo)            # where we are now can be redone
         snap, self.state = self._undo.pop()
         os.replace(snap, self.path)
         self._edits -= 1
+        return True
+
+    def redo(self):
+        if not self._redo:
+            return False
+        self._stash(self._undo)
+        snap, self.state = self._redo.pop()
+        os.replace(snap, self.path)
+        self._edits += 1
         return True
 
     def reset(self):

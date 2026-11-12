@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFrame, QLineEdit, QMessageBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QDialog, QDialogButtonBox, QFormLayout, QScrollArea, QCheckBox
+    QHeaderView, QDialog, QDialogButtonBox, QFormLayout, QScrollArea, QCheckBox, QTextEdit
 )
 from PyQt6.QtCore import Qt, QRectF, QSize, QVariantAnimation
 from PyQt6.QtGui import QPainter, QColor
@@ -193,6 +193,64 @@ class BulkDialog(QDialog):
             QMessageBox.critical(self, "Invalid input", "Check the page range and a percentage between 0 and 100.")
 
 
+class PermitRulesDialog(QDialog):
+    RULES = (
+        "Read before turning this on:\n\n"
+        "1. Only turn this on if your business has a valid business permit (Mayor's permit) "
+        "and is registered with the BIR (you have a TIN).\n\n"
+        "2. Your receipts will then be labeled \"Official Receipt\" and will show your TIN.\n\n"
+        "3. A real Official Receipt must follow BIR rules (for example an Authority to Print, "
+        "or an approved receipting system). Ask your BIR RDO whether receipts from this app are "
+        "acceptable before you use them as your official receipt.\n\n"
+        "4. You are responsible for using this correctly. Do not turn it on if you have no permit.\n\n"
+        "If you leave it off, receipts say they are NOT official and are only a price breakdown."
+    )
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Business permit rules")
+        self.resize(460, 420)
+        lay = QVBoxLayout(self)
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(self.RULES)
+        lay.addWidget(text, 1)
+
+        self.agree_row = QFrame()
+        self.agree_row.setObjectName("flash")
+        row = QHBoxLayout(self.agree_row)
+        row.setContentsMargins(8, 6, 8, 6)
+        self.agree = ToggleSwitch("I have read the rules above")
+        row.addWidget(self.agree)
+        row.addStretch()
+        lay.addWidget(self.agree_row)
+
+        # light red flash, twice, then back to normal
+        self._flash = QVariantAnimation(self)
+        self._flash.setDuration(400)
+        self._flash.setStartValue(0)
+        self._flash.setKeyValueAt(0.5, 110)
+        self._flash.setEndValue(0)
+        self._flash.setLoopCount(2)
+        self._flash.valueChanged.connect(self._paint_flash)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._try_accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+    def _paint_flash(self, alpha):
+        self.agree_row.setStyleSheet(
+            f"QFrame#flash {{ background: rgba(239, 68, 68, {int(alpha)}); border-radius: 8px; }}")
+
+    def _try_accept(self):
+        if self.agree.isChecked():
+            self.accept()
+        else:
+            self._flash.stop()
+            self._flash.start()
+            
+
 class SettingsTab(QWidget):
     def __init__(self, settings, on_save, on_check_update=None, parent=None):
         super().__init__(parent)
@@ -234,6 +292,22 @@ class SettingsTab(QWidget):
         self.shop_input.setMaxLength(40)
         name_row.addWidget(self.shop_input, 1)
         gen_layout.addLayout(name_row)
+
+        self.permit_box = ToggleSwitch("I have a business permit / BIR registration")
+        self.permit_box.setChecked(bool(self.settings.get("has_permit")))
+        self.permit_box.toggled.connect(self._toggle_permit)
+        gen_layout.addWidget(self.permit_box)
+
+        tin_row = QHBoxLayout()
+        self.tin_label = QLabel("TIN")
+        self.tin_input = QLineEdit(self.settings.get("tin", ""))
+        self.tin_input.setPlaceholderText("000-000-000-00000")
+        self.tin_input.setMaxLength(20)
+        tin_row.addWidget(self.tin_label)
+        tin_row.addWidget(self.tin_input, 1)
+        gen_layout.addLayout(tin_row)
+        self.tin_label.setVisible(self.permit_box.isChecked())
+        self.tin_input.setVisible(self.permit_box.isChecked())
 
         if sys.platform.startswith("win"):
             self.autostart_box = ToggleSwitch("Open automatically when my PC turns on")
@@ -430,6 +504,15 @@ class SettingsTab(QWidget):
         root.addLayout(save_row)
         root.addStretch()
 
+    def _toggle_permit(self, on):
+        if on and not PermitRulesDialog(self).exec():
+            self.permit_box.blockSignals(True)
+            self.permit_box.setChecked(False)
+            self.permit_box.blockSignals(False)
+            on = False
+        self.tin_label.setVisible(on)
+        self.tin_input.setVisible(on)
+
     def _toggle_autostart(self, checked):
         try:
             if checked:
@@ -551,7 +634,6 @@ class SettingsTab(QWidget):
         self.settings["min_price_per_page"] = defaults["min_price_per_page"]
         self.settings["min_price_color"] = defaults["min_price_color"]
         self.settings["color_threshold_pct"] = defaults["color_threshold_pct"]
-        self.discount_input.setText(str(self.settings["default_discount"]))
         self.settings["quality_multipliers"] = defaults["quality_multipliers"]
         self.settings["high_black_mix"] = defaults["high_black_mix"]
 
@@ -567,7 +649,6 @@ class SettingsTab(QWidget):
         self.min_price_color_input.setText(_opt_str(self.settings["min_price_color"]))
         self.color_threshold_input.setText(str(self.settings["color_threshold_pct"]))
         self.black_mix_input.setText(str(self.settings["high_black_mix"]))
-        self.discount_input.setText(str(self.settings["default_discount"]))
         for key, field in self.quality_inputs.items():
             field.setText(str(self.settings["quality_multipliers"][key]))
 
@@ -600,6 +681,12 @@ class SettingsTab(QWidget):
         except ValueError:
             QMessageBox.critical(self, "Invalid input", "Ink prices and percentages must be numbers.")
             return
+        tin = self.tin_input.text().strip()
+        if self.permit_box.isChecked() and not tin:
+            QMessageBox.critical(self, "TIN needed", "Enter your TIN, or turn off the permit option.")
+            return
+        self.settings["has_permit"] = self.permit_box.isChecked()
+        self.settings["tin"] = tin
         pricing.save_settings(self.settings)
         self.on_save()
         QMessageBox.information(self, "Saved", "Settings saved.")

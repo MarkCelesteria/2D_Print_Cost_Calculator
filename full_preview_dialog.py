@@ -1,18 +1,21 @@
+import json
+
 from PyQt6.QtWidgets import (
     QDialog, QScrollArea, QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
-    QStackedWidget, QProgressBar, QFileDialog, QMessageBox, QMenu
+    QStackedWidget, QProgressBar, QFileDialog, QMessageBox, QMenu, QApplication
 )
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QTimer, QEvent, QRectF, QPointF, QPoint, QSize, QEasingCurve, QVariantAnimation,
-    QCoreApplication
+    QCoreApplication, QMimeData, QBuffer, QIODevice
 )
-from PyQt6.QtGui import QPainter, QColor, QFont, QPixmap, QPen, QPainterPath
+from PyQt6.QtGui import QPainter, QColor, QFont, QPixmap, QPen, QPainterPath, QDrag, QCursor, QImage
 
 from analyzer import (
     render_pdf_page, apply_preview_mode, format_page_ranges, get_pdf_page_inches, fit_page_to_paper,
     is_image, IMAGE_EXTS
 )
 from pdf_editor import PdfEditor, export_pdf
+from icons import make_icon
 from preview_widget import pil_to_qpixmap
 from style import PREVIEW_BG, MUTED, PRIMARY
 
@@ -22,6 +25,8 @@ ZOOM_STEP = 1.25          # buttons / keyboard
 WHEEL_SENSITIVITY = 1.0015  # per wheel unit: one mouse notch (120) is about x1.2, touchpads zoom smoothly
 ZOOM_ANIM_MS = 140
 
+MIME_IMAGE = "application/x-printcost-image"   # a picture being dragged from one page to another
+MIME_CLIP = "application/x-printcost-size"      # size (points) of a picture copied from a page
 HANDLE = 10   # grab distance of a resize handle, in pixels
 MIN_PX = 14   # smallest image side while resizing
 CURSORS = {
@@ -96,14 +101,21 @@ class PageLabel(QLabel):
     changed = pyqtSignal(int, int, object)     # page, image index, new rect (fractions of the page)
     dropped = pyqtSignal(int, list, object)    # page, picture files, drop point (fractions)
     selection_changed = pyqtSignal()
+    image_dropped = pyqtSignal(int, object, object)      # page, what was dragged, drop point (fractions)
+    context_requested = pyqtSignal(int, int, object, object)  # page, image index (-1 = none), point (fractions), global pos
+    drag_started = pyqtSignal()
+    drag_finished = pyqtSignal()
 
-    def __init__(self, index, provider, text=""):
+    def __init__(self, index, provider, size_provider, text=""):
         super().__init__(text)
         self.index = index
         self.edit = False
         self.accept_files = False
         self.sel = -1
         self._provider = provider
+        self._size_provider = size_provider   # page index -> (width, height) in points
+        self._drop_img = None   # a picture from another page hovering over this one
+        self._drop_at = None
         self._items = None
         self._hover = -1
         self._drag = None
@@ -272,6 +284,9 @@ class PageLabel(QLabel):
             return
         if d:
             if d["mode"] == "move":
+                if not self.rect().adjusted(-8, -8, 8, 8).contains(pos.toPoint()):
+                    self._start_external_drag()  # it left the page: it becomes a picture you can drop on any page
+                    return
                 r = QRectF(d["orig"])
                 r.translate(pos - d["start"])
                 r.moveLeft(min(max(r.left(), 0), self.width() - r.width()))
@@ -321,14 +336,87 @@ class PageLabel(QLabel):
             self.update()
         super().leaveEvent(e)
 
-    # ---------------- drag and drop of picture files ----------------
+    # ---------------- dragging a picture to another page ----------------
+
+    def _drag_tile(self, n):
+        """A small tile cut from the page, like the icon of a file you drag."""
+        pm = self.pixmap()
+        thumb = QPixmap(60, 60)
+        thumb.fill(QColor("#cbd5e1"))
+        if pm is not None and not pm.isNull():
+            src = QRectF(n.x() * pm.width(), n.y() * pm.height(),
+                         n.width() * pm.width(), n.height() * pm.height()).toRect()
+            thumb = pm.copy(src).scaled(110, 110, Qt.AspectRatioMode.KeepAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation)
+        tile = QPixmap(thumb.width() + 8, thumb.height() + 8)
+        tile.fill(Qt.GlobalColor.transparent)
+        tp = QPainter(tile)
+        tp.setRenderHint(QPainter.RenderHint.Antialiasing)
+        tp.setBrush(QColor("white"))
+        tp.setPen(QPen(QColor("#94a3b8"), 1))
+        tp.drawRoundedRect(QRectF(0.5, 0.5, tile.width() - 1, tile.height() - 1), 5, 5)
+        tp.drawPixmap(4, 4, thumb)
+        tp.end()
+        return tile
+
+    def _start_external_drag(self):
+        items = self.items()
+        if not (0 <= self.sel < len(items)):
+            return
+        item = items[self.sel]
+        n = item["rect"]
+        pw, ph = self._size_provider(self.index)
+        payload = {"page": self.index, "idx": self.sel, "xref": item["xref"],
+                   "w": n.width() * pw, "h": n.height() * ph}
+        mime = QMimeData()
+        mime.setData(MIME_IMAGE, json.dumps(payload).encode())
+        tile = self._drag_tile(n)
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.setPixmap(tile)
+        drag.setHotSpot(QPoint(tile.width() // 2, tile.height() // 2))
+        self._drag = None
+        self.drag_started.emit()
+        drag.exec(Qt.DropAction.MoveAction)  # nothing changes unless it is dropped on a page
+        self.drag_finished.emit()
+        self.update()
+
+    def contextMenuEvent(self, e):
+        if not self.edit or self._crop:
+            return
+        pos = QPointF(e.pos())
+        kind, v = self._hit(pos)
+        items = self.items()
+        idx = self.sel if kind == "handle" else (v if kind == "image" and not items[v]["locked"] else -1)
+        if idx != self.sel:
+            self.sel = idx
+            self.selection_changed.emit()
+            self.update()
+        self.context_requested.emit(self.index, idx, QPointF(pos.x() / max(1, self.width()), pos.y() / max(1, self.height())),
+                                    e.globalPos())
+
+    # ---------------- drag and drop onto the page ----------------
+
+    def _image_payload(self, e):
+        md = e.mimeData()
+        if self.edit and md.hasFormat(MIME_IMAGE):
+            try:
+                return json.loads(bytes(md.data(MIME_IMAGE)).decode())
+            except ValueError:
+                return None
+        return None
 
     def _has_pictures(self, e):
         return self.accept_files and e.mimeData().hasUrls() and any(
             is_image(u.toLocalFile()) for u in e.mimeData().urls())
 
     def dragEnterEvent(self, e):
-        if self._has_pictures(e):
+        payload = self._image_payload(e)
+        if payload:
+            self._drop_img, self._drop_at = payload, e.position()
+            e.acceptProposedAction()
+            self.update()
+        elif self._has_pictures(e):
             e.acceptProposedAction()
             self._drop_hint = True
             self.update()
@@ -336,27 +424,81 @@ class PageLabel(QLabel):
             e.ignore()
 
     def dragMoveEvent(self, e):
-        if self._has_pictures(e):
+        if self._drop_img:
+            self._drop_at = e.position()
+            e.acceptProposedAction()
+            self.update()
+        elif self._has_pictures(e):
             e.acceptProposedAction()
 
     def dragLeaveEvent(self, e):
         self._drop_hint = False
+        self._drop_img = None
         self.update()
 
     def dropEvent(self, e):
+        payload, self._drop_img = self._drop_img, None
         self._drop_hint = False
         self.update()
+        p = e.position()
+        at = QPointF(p.x() / max(1, self.width()), p.y() / max(1, self.height()))
+        if payload:
+            e.acceptProposedAction()
+            self.image_dropped.emit(self.index, payload, at)
+            return
         paths = [u.toLocalFile() for u in e.mimeData().urls() if is_image(u.toLocalFile())]
         if paths and self.accept_files:
             e.acceptProposedAction()
-            p = e.position()
-            self.dropped.emit(self.index, paths, QPointF(p.x() / max(1, self.width()), p.y() / max(1, self.height())))
+            self.dropped.emit(self.index, paths, at)
+
+    # ---------------- painting helpers ----------------
+
+    def _paint_badge(self, p):
+        text = f"Page {self.index + 1}"
+        r = QRectF(8, 8, p.fontMetrics().horizontalAdvance(text) + 16, 22)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(15, 27, 45, 175))
+        p.drawRoundedRect(r, 6, 6)
+        p.setPen(QColor("white"))
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
+
+    def _paint_crop(self, p, accent):
+        bd, box = self._px(self._crop["bounds"]), self._px(self._crop["box"])
+        outside = QPainterPath()
+        outside.addRect(bd)
+        inner = QPainterPath()
+        inner.addRect(box)
+        p.fillPath(outside.subtracted(inner), QColor(0, 0, 0, 150))  # darken what will be trimmed away
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor("white"), 1))
+        p.drawRect(box)
+        p.setPen(QPen(accent, 2, Qt.PenStyle.DashLine))
+        p.drawRect(box)
+        p.setBrush(QColor("white"))
+        p.setPen(QPen(accent, 1.5))
+        for pt in self._handles(box).values():
+            p.drawRect(QRectF(pt.x() - 4, pt.y() - 4, 8, 8))
+
+    def _paint_drop(self, p, accent):
+        """Where a picture dragged from another page will land."""
+        pw, ph = self._size_provider(self.index)
+        w = min(self._drop_img["w"] / pw, 1.0) * self.width()
+        h = min(self._drop_img["h"] / ph, 1.0) * self.height()
+        r = QRectF(self._drop_at.x() - w / 2, self._drop_at.y() - h / 2, w, h)
+        r.moveLeft(min(max(r.left(), 0), self.width() - w))
+        r.moveTop(min(max(r.top(), 0), self.height() - h))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(accent, 3))
+        p.drawRect(self.rect().adjusted(1, 1, -1, -1))
+        p.setPen(QPen(accent, 2, Qt.PenStyle.DashLine))
+        p.setBrush(QColor(8, 145, 178, 45))
+        p.drawRect(r)
 
     # ---------------- painting ----------------
 
     def paintEvent(self, e):
         super().paintEvent(e)
-        if not (self.edit or self._drop_hint):
+        if not (self.edit or self._drop_hint or self._drop_img):
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -367,6 +509,8 @@ class PageLabel(QLabel):
             p.drawRect(self.rect().adjusted(2, 2, -2, -2))
             p.setPen(accent)
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Drop image here")
+        if self._drop_img and self._drop_at is not None:
+            self._paint_drop(p, accent)
         if self.edit:
             items = self.items()
             self._paint_badge(p)
@@ -397,39 +541,6 @@ class PageLabel(QLabel):
                 for pt in self._handles(r).values():
                     p.drawRect(QRectF(pt.x() - 4, pt.y() - 4, 8, 8))
         p.end()
-
-
-def _paint_page_badge(label, p):
-    text = f"Page {label.index + 1}"
-    w = p.fontMetrics().horizontalAdvance(text) + 16
-    r = QRectF(8, 8, w, 22)
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QColor(15, 27, 45, 175))
-    p.drawRoundedRect(r, 6, 6)
-    p.setPen(QColor("white"))
-    p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
-
-
-def _paint_crop_box(label, p, accent):
-    bd, box = label._px(label._crop["bounds"]), label._px(label._crop["box"])
-    outside = QPainterPath()
-    outside.addRect(bd)
-    inner = QPainterPath()
-    inner.addRect(box)
-    p.fillPath(outside.subtracted(inner), QColor(0, 0, 0, 150))  # darken what will be trimmed away
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.setPen(QPen(QColor("white"), 1))
-    p.drawRect(box)
-    p.setPen(QPen(accent, 2, Qt.PenStyle.DashLine))
-    p.drawRect(box)
-    p.setBrush(QColor("white"))
-    p.setPen(QPen(accent, 1.5))
-    for pt in label._handles(box).values():
-        p.drawRect(QRectF(pt.x() - 4, pt.y() - 4, 8, 8))
-
-
-PageLabel._paint_badge = _paint_page_badge
-PageLabel._paint_crop = _paint_crop_box
 
 
 class FullPreviewDialog(QDialog):
@@ -463,13 +574,17 @@ class FullPreviewDialog(QDialog):
         self.can_edit = fit_paper is None   # a page shown on another paper no longer lines up with the file
         self._page_pts = {}     # page index -> (width, height) in points
         self._crop_label = None  # the page whose picture is being trimmed
+        self._paste_count = 0    # pastes since the last copy (each lands a little lower, so they don't pile up)
+        self._autoscroll = QTimer(self)  # scrolls the pages while a picture is dragged near the top or bottom edge
+        self._autoscroll.setInterval(30)
+        self._autoscroll.timeout.connect(self._autoscroll_tick)
 
         layout = QVBoxLayout(self)
 
         top_row = QHBoxLayout()
         mode_names = {"color": "Color", "grayscale": "Grayscale", "bw": "Black & White"}
         self._mode_name = mode_names.get(mode, "Color")
-        self._edit_hint = ("Click an image to select  ·  drag to move, handles to resize  ·  Delete removes  ·  "
+        self._edit_hint = ("Right-click an image for more  ·  drag an image off its page onto another page to move it  ·  "
                            "drop picture files onto a page to add them")
         self.hint = QLabel()
         self.hint.setObjectName("muted")
@@ -491,46 +606,48 @@ class FullPreviewDialog(QDialog):
         self.edit_btn.setToolTip("Move, resize, delete and add images" if self.can_edit else
                                  "Editing isn't available while the pages are shown on another paper size.")
         self.edit_btn.toggled.connect(self._set_edit)
-        self.undo_btn = button("Undo", self._undo, "Undo (Ctrl + Z)")
-        self.reset_btn = button("Reset", self._reset, "Back to the document as it was loaded")
-        self.add_btn = button("Add image", self._add_clicked, "Add a picture (or drop files onto a page)")
-        self.delete_btn = button("Delete image", self._delete_selected, "Delete the selected image (Delete)")
-        self.crop_btn = button("Crop", self._start_crop, "Trim the selected image")
-        self.apply_crop_btn = button("Apply crop", self._apply_crop, "Apply the crop (Enter)")
-        self.cancel_crop_btn = button("Cancel crop", self._cancel_crop, "Cancel the crop (Esc)")
+        def tool(icon, slot, tip, color=None, width=40):
+            b = QPushButton()
+            b.setObjectName("secondary")
+            b.setIcon(make_icon(icon, color) if color else make_icon(icon))
+            b.setIconSize(QSize(18, 18))
+            b.setFixedSize(width, 34)
+            b.setStyleSheet("padding: 0px;")
+            b.setToolTip(tip)
+            if slot:
+                b.clicked.connect(slot)
+            return b
 
-        self.position_btn = QPushButton("Position")
-        self.position_btn.setObjectName("secondary")
-        self.position_btn.setToolTip("Place the selected image on the page")
-        pos_menu = QMenu(self.position_btn)
-        for item in (("Top", "top"), ("Middle", "vcenter"), ("Bottom", "bottom"), None,
-                     ("Left", "left"), ("Center", "hcenter"), ("Right", "right"), None,
-                     ("Bring to front", "front"), ("Send to back", "back")):
-            if item is None:
-                pos_menu.addSeparator()
-                continue
-            act = pos_menu.addAction(item[0])
-            act.triggered.connect(lambda checked=False, how=item[1]: self._arrange(how))
-        self.position_btn.setMenu(pos_menu)
+        self.undo_btn = tool("undo", self._undo, "Undo (Ctrl + Z)")
+        self.redo_btn = tool("redo", self._redo, "Redo (Ctrl + Y)")
+        self.reset_btn = tool("reset", self._reset, "Reset: back to the document as it was loaded")
+        self.add_btn = tool("image-add", lambda: self._add_clicked(), "Add a picture (or drop picture files onto a page)")
+        self.copy_btn = tool("copy", self._copy, "Copy the selected image (Ctrl + C)")
+        self.paste_btn = tool("paste", lambda: self._paste(), "Paste an image (Ctrl + V)")
+        self.delete_btn = tool("trash", self._delete_selected, "Delete the selected image (Delete)")
+        self.crop_btn = tool("crop", self._start_crop, "Crop the selected image")
+        self.apply_crop_btn = tool("check", self._apply_crop, "Apply the crop (Enter)", "#16a34a")
+        self.cancel_crop_btn = tool("close", self._cancel_crop, "Cancel the crop (Esc)", "#dc2626")
 
-        self.pages_btn = QPushButton("Pages")
-        self.pages_btn.setObjectName("secondary")
-        self.pages_btn.setToolTip("Add or delete pages")
+        self.position_btn = tool("position", None, "Place the selected image on the page", width=54)
+        self.position_btn.setMenu(self._fill_position_menu(QMenu(self.position_btn)))
+
+        self.pages_btn = tool("pages", None, "Add or delete pages", width=54)
         pages_menu = QMenu(self.pages_btn)
-        self.act_add_after = pages_menu.addAction("Add blank page")
+        self.act_add_after = pages_menu.addAction(make_icon("pages"), "Add blank page")
         self.act_add_after.triggered.connect(lambda checked=False: self._add_page("after"))
-        self.act_add_end = pages_menu.addAction("Add blank page at the end")
+        self.act_add_end = pages_menu.addAction(make_icon("pages"), "Add blank page at the end")
         self.act_add_end.triggered.connect(lambda checked=False: self._add_page("end"))
         pages_menu.addSeparator()
-        self.act_del_page = pages_menu.addAction("Delete page")
+        self.act_del_page = pages_menu.addAction(make_icon("trash"), "Delete page")
         self.act_del_page.triggered.connect(lambda checked=False: self._delete_page())
         pages_menu.aboutToShow.connect(self._refresh_page_menu)
         self.pages_btn.setMenu(pages_menu)
 
         self.edit_tip = QLabel(self._edit_hint)
         self.edit_tip.setObjectName("muted")
-        self.edit_tools = [self.undo_btn, self.reset_btn, self.add_btn, self.delete_btn, self.crop_btn,
-                           self.position_btn, self.pages_btn, self.edit_tip]
+        self.edit_tools = [self.undo_btn, self.redo_btn, self.reset_btn, self.add_btn, self.copy_btn, self.paste_btn,
+                           self.delete_btn, self.crop_btn, self.position_btn, self.pages_btn, self.edit_tip]
         for w in self.edit_tools + [self.apply_crop_btn, self.cancel_crop_btn]:
             w.setVisible(False)
         export_btn = button("Export", self._export, "Save the document (with your edits) as a PDF")
@@ -566,13 +683,13 @@ class FullPreviewDialog(QDialog):
         layout.addLayout(top_row)
 
         edit_row = QHBoxLayout()   # second row, only shown in edit mode
-        for w in (self.undo_btn, self.reset_btn):
-            edit_row.addWidget(w)
-        edit_row.addSpacing(10)
-        for w in (self.add_btn, self.delete_btn, self.crop_btn, self.position_btn):
-            edit_row.addWidget(w)
-        edit_row.addSpacing(10)
-        edit_row.addWidget(self.pages_btn)
+        edit_row.setSpacing(6)
+        for group in ((self.undo_btn, self.redo_btn, self.reset_btn),
+                      (self.add_btn, self.copy_btn, self.paste_btn, self.delete_btn),
+                      (self.crop_btn, self.position_btn, self.pages_btn)):
+            for w in group:
+                edit_row.addWidget(w)
+            edit_row.addSpacing(12)
         edit_row.addWidget(self.apply_crop_btn)
         edit_row.addWidget(self.cancel_crop_btn)
         edit_row.addStretch()
@@ -618,6 +735,7 @@ class FullPreviewDialog(QDialog):
         self.stack.addWidget(self.scroll)  # index 1
         layout.addWidget(self.stack, 1)
 
+        QApplication.clipboard().dataChanged.connect(self._update_edit_buttons)  # Paste lights up when something is copied
         self._rerender_timer = QTimer(self)
         self._rerender_timer.setSingleShot(True)
         self._rerender_timer.timeout.connect(self._start_worker)
@@ -766,10 +884,12 @@ class FullPreviewDialog(QDialog):
     def _update_edit_buttons(self):
         cropping = self._crop_label is not None
         has_sel = self._selected_label() is not None
-        self.undo_btn.setEnabled(self.editor is not None and self.editor.can_undo and not cropping)
-        self.delete_btn.setEnabled(has_sel and not cropping)
-        self.crop_btn.setEnabled(has_sel and not cropping)
-        self.position_btn.setEnabled(has_sel and not cropping)
+        ed = self.editor
+        self.undo_btn.setEnabled(ed is not None and ed.can_undo and not cropping)
+        self.redo_btn.setEnabled(ed is not None and ed.can_redo and not cropping)
+        for w in (self.delete_btn, self.crop_btn, self.position_btn, self.copy_btn):
+            w.setEnabled(has_sel and not cropping)
+        self.paste_btn.setEnabled(self._can_paste() and not cropping)
         for w in (self.reset_btn, self.add_btn, self.pages_btn):
             w.setEnabled(not cropping)
         self.apply_crop_btn.setVisible(cropping)
@@ -783,16 +903,23 @@ class FullPreviewDialog(QDialog):
                 l.update()
         self._update_edit_buttons()
 
-    def _edit_page(self, page, op, select_last=False):
-        """Run one edit on a page, then show the result. `op` may return the image's new rect (points)."""
+    def _page_size(self, index):
+        if index not in self._page_pts and 0 <= index < len(self.page_labels):
+            self.page_labels[index].items()  # reading the images also learns the page size
+        return self._page_pts.get(index, (612.0, 792.0))
+
+    def _edit_page(self, page, op, select_last=False, also=()):
+        """Run one edit on a page (and refresh `also` pages it touched). `op` may return the image's new rect."""
         running = self._quiesce()
         result = None
         try:
             result = op()
         except Exception as e:
             QMessageBox.warning(self, "Couldn't edit", str(e))
+        pages = [page] + [p for p in also if p != page]
+        for pg in pages:
+            self.page_labels[pg].invalidate()
         lbl = self.page_labels[page]
-        lbl.invalidate()
         items = lbl.items()  # also refreshes the page size
         if isinstance(result, tuple) and len(result) == 4 and page in self._page_pts:
             pw, ph = self._page_pts[page]
@@ -800,7 +927,8 @@ class FullPreviewDialog(QDialog):
                                    (result[2] - result[0]) / pw, (result[3] - result[1]) / ph))
         elif select_last:
             lbl.sel = len(items) - 1
-        self._render_page_now(page)
+        for pg in pages:
+            self._render_page_now(pg)
         if running:
             self._start_worker()  # finish sharpening the other pages
         self._update_edit_buttons()
@@ -819,30 +947,147 @@ class FullPreviewDialog(QDialog):
         xref = lbl.items()[idx]["xref"]
         self._edit_page(page, lambda: self.editor.delete_image(page, idx, xref))
 
-    def _add_images(self, page, paths, point):
-        self.page_labels[page].items()  # makes sure the page size is known
-        pw, ph = self._page_pts.get(page, (612.0, 792.0))
+    def _add_images(self, page, pics, point, offset=0):
+        """pics = [(file path or picture bytes, size in points or None)]"""
+        pw, ph = self._page_size(page)
 
         def op():
-            for n, path in enumerate(paths):
-                self.editor.add_image(page, path, (point.x() * pw + 16 * n, point.y() * ph + 16 * n))
+            for n, (src, size) in enumerate(pics):
+                d = offset + 16 * n
+                self.editor.add_image(page, src, (point.x() * pw + d, point.y() * ph + d), size)
         self._edit_page(page, op, select_last=True)
 
-    def _add_clicked(self):
+    def _add_clicked(self, page=None, point=None):
         exts = " ".join(f"*{e}" for e in IMAGE_EXTS)
         paths, _ = QFileDialog.getOpenFileNames(self, "Add images", "", f"Images ({exts})")
         if not paths:
             return
-        y = self.scroll.verticalScrollBar().value() + self.scroll.viewport().height() / 2
-        page, frac = self._page_at(y)  # the page in the middle of the screen
-        self._add_images(page, paths, QPointF(0.5, min(max(frac, 0.15), 0.85)))
+        if page is None:
+            y = self.scroll.verticalScrollBar().value() + self.scroll.viewport().height() / 2
+            page, frac = self._page_at(y)  # the page in the middle of the screen
+            point = QPointF(0.5, min(max(frac, 0.15), 0.85))
+        self._add_images(page, [(p, None) for p in paths], point)
 
     def _on_dropped(self, page, paths, point):
         if not self.edit_mode:
             self.edit_btn.setChecked(True)  # dropping a picture switches Edit on
             if not self.edit_mode:
                 return
-        self._add_images(page, paths, point)
+        self._add_images(page, [(p, None) for p in paths], point)
+
+    # ---------------- copy, paste, right-click ----------------
+
+    def _can_paste(self):
+        mime = QApplication.clipboard().mimeData()
+        return mime is not None and (mime.hasImage() or any(is_image(u.toLocalFile()) for u in mime.urls()))
+
+    def _copy(self):
+        lbl = self._selected_label()
+        if lbl is None or self.editor is None:
+            return
+        page, idx = lbl.index, lbl.sel
+        try:
+            data, w, h = self.editor.copy_image(page, idx, lbl.items()[idx]["xref"])
+        except Exception as e:
+            QMessageBox.warning(self, "Couldn't copy", str(e))
+            return
+        mime = QMimeData()
+        mime.setImageData(QImage.fromData(data))  # other programs can paste it too
+        mime.setData(MIME_CLIP, f"{w:.2f},{h:.2f}".encode())  # so a paste here keeps the size
+        QApplication.clipboard().setMimeData(mime)
+        self._paste_count = 0
+
+    def _clipboard_pictures(self):
+        """[(file path or picture bytes, size in points or None)] from the clipboard."""
+        cb = QApplication.clipboard()
+        mime = cb.mimeData()
+        if mime is None:
+            return []
+        size = None
+        if mime.hasFormat(MIME_CLIP):
+            try:
+                w, h = bytes(mime.data(MIME_CLIP)).decode().split(",")
+                size = (float(w), float(h))
+            except ValueError:
+                size = None
+        if mime.hasImage():
+            img = cb.image()
+            if not img.isNull():
+                buf = QBuffer()
+                buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                img.save(buf, "PNG")
+                return [(bytes(buf.data()), size)]
+        return [(u.toLocalFile(), None) for u in mime.urls() if is_image(u.toLocalFile())]
+
+    def _paste(self, page=None, point=None):
+        if self.editor is None:
+            return
+        pics = self._clipboard_pictures()
+        if not pics:
+            return
+        offset = 0
+        if page is None:  # Ctrl+V / the Paste button: the page in the middle of the screen
+            y = self.scroll.verticalScrollBar().value() + self.scroll.viewport().height() / 2
+            page, frac = self._page_at(y)
+            point = QPointF(0.5, min(max(frac, 0.15), 0.85))
+            offset = 16 * self._paste_count
+            self._paste_count += 1
+        self._add_images(page, pics, point, offset)
+
+    def _fill_position_menu(self, menu):
+        for item in (("Top", "top"), ("Middle", "vcenter"), ("Bottom", "bottom"), None,
+                     ("Left", "left"), ("Center", "hcenter"), ("Right", "right"), None,
+                     ("Bring to front", "front"), ("Send to back", "back")):
+            if item is None:
+                menu.addSeparator()
+                continue
+            act = menu.addAction(item[0])
+            act.triggered.connect(lambda checked=False, how=item[1]: self._arrange(how))
+        return menu
+
+    def _on_context(self, page, idx, point, global_pos):
+        menu = QMenu(self)
+
+        def add(icon, text, slot, enabled=True):
+            act = menu.addAction(make_icon(icon), text)
+            act.setEnabled(enabled)
+            act.triggered.connect(lambda checked=False: slot())
+
+        if idx >= 0:
+            add("copy", "Copy", self._copy)
+            add("paste", "Paste", lambda: self._paste(page, point), self._can_paste())
+            menu.addSeparator()
+            add("crop", "Crop", self._start_crop)
+            self._fill_position_menu(menu.addMenu(make_icon("position"), "Position"))
+            menu.addSeparator()
+            add("trash", "Delete", self._delete_selected)
+        else:
+            add("paste", "Paste here", lambda: self._paste(page, point), self._can_paste())
+            add("image-add", "Add image from file...", lambda: self._add_clicked(page, point))
+        menu.exec(global_pos)
+
+    # ---------------- moving a picture to another page ----------------
+
+    def _on_image_dropped(self, dst, payload, point):
+        pw, ph = self._page_size(dst)
+        w, h = payload["w"], payload["h"]
+        cx, cy = point.x() * pw, point.y() * ph
+        rect = (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+        src, idx, xref = payload["page"], payload["idx"], payload["xref"]
+        self._edit_page(dst, lambda: self.editor.move_to_page(src, idx, xref, dst, rect), also=(src,))
+
+    def _autoscroll_tick(self):
+        vp = self.scroll.viewport()
+        y = vp.mapFromGlobal(QCursor.pos()).y()
+        edge = 70
+        if y < edge:
+            dy = -min(45, 3 + (edge - y) // 3)
+        elif y > vp.height() - edge:
+            dy = min(45, 3 + (y - (vp.height() - edge)) // 3)
+        else:
+            return
+        bar = self.scroll.verticalScrollBar()
+        bar.setValue(bar.value() + dy)
 
     # ---------------- crop and position ----------------
 
@@ -880,7 +1125,7 @@ class FullPreviewDialog(QDialog):
     # ---------------- pages ----------------
 
     def _make_label(self, i):
-        lbl = PageLabel(i, self._items_for, f"Loading page {i + 1}...")
+        lbl = PageLabel(i, self._items_for, self._page_size, f"Loading page {i + 1}...")
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl.setScaledContents(True)  # Qt stretches the page smoothly, and only for pages on screen
         lbl.setMinimumHeight(200)
@@ -889,6 +1134,10 @@ class FullPreviewDialog(QDialog):
         lbl.changed.connect(self._on_changed)
         lbl.dropped.connect(self._on_dropped)
         lbl.selection_changed.connect(self._on_selection)
+        lbl.image_dropped.connect(self._on_image_dropped)
+        lbl.context_requested.connect(self._on_context)
+        lbl.drag_started.connect(self._autoscroll.start)
+        lbl.drag_finished.connect(self._autoscroll.stop)
         return lbl
 
     def _refresh_hint(self):
@@ -1009,6 +1258,13 @@ class FullPreviewDialog(QDialog):
         self.editor.undo()
         self._after_history()
 
+    def _redo(self):
+        if self.editor is None or not self.editor.can_redo:
+            return
+        self._quiesce()
+        self.editor.redo()
+        self._after_history()
+
     def _reset(self):
         if self.editor is None:
             return
@@ -1121,6 +1377,7 @@ class FullPreviewDialog(QDialog):
 
     def keyPressEvent(self, event):
         ctrl = event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        shift = event.modifiers() & Qt.KeyboardModifier.ShiftModifier
         key = event.key()
         if self._crop_label is not None and key in (Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Enter):
             if key == Qt.Key.Key_Escape:
@@ -1137,8 +1394,16 @@ class FullPreviewDialog(QDialog):
                 self.close()
         elif self.edit_mode and self._crop_label is None and key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self._delete_selected()
+        elif self.edit_mode and self._crop_label is None and ctrl and key == Qt.Key.Key_Z and shift:
+            self._redo()
         elif self.edit_mode and self._crop_label is None and ctrl and key == Qt.Key.Key_Z:
             self._undo()
+        elif self.edit_mode and self._crop_label is None and ctrl and key == Qt.Key.Key_Y:
+            self._redo()
+        elif self.edit_mode and self._crop_label is None and ctrl and key == Qt.Key.Key_C:
+            self._copy()
+        elif self.edit_mode and self._crop_label is None and ctrl and key == Qt.Key.Key_V:
+            self._paste()
         elif ctrl and key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
             self._zoom_by(ZOOM_STEP)
         elif ctrl and key == Qt.Key.Key_Minus:

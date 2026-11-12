@@ -40,6 +40,8 @@ DEFAULT_SETTINGS = {
     "min_price_color": None,
     "color_threshold_pct": 0.5,
     "shop_name": "Print Cost Calculator",
+    "has_permit": False,
+    "tin": "",
     "discounts": [],
     "bulk_discounts": [],
     "asked_about_autostart": False,

@@ -845,6 +845,7 @@ class CalculateTab(QWidget):
             "quality": getattr(self, "print_quality", "standard"),
             "pages": getattr(self, "print_pages", None),
             "page_count": self.page_count,
+            "tin": (self.settings.get("tin") or None) if self.settings.get("has_permit") else None,
             "result": result,
         }
 

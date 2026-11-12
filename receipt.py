@@ -6,7 +6,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-    QFileDialog, QMessageBox,
+    QFileDialog, QMessageBox, QLineEdit,
 )
 
 from analyzer import format_page_ranges
@@ -65,15 +65,20 @@ def _draw(page, d):
     y += 2 * s + gap + 16
 
     center(d["shop"], 13, "hebo", gap=1.4)
-    center("PRINT RECEIPT", 8, color=MUTED, gap=1.2)
+    tin = d.get("tin")
+    center("OFFICIAL RECEIPT" if tin else "PRINT RECEIPT", 8, color=MUTED, gap=1.2)
+    if tin:
+        center(f"TIN: {tin}", 8, color=MUTED, gap=1.2)
     y += 6
     rule()
 
     when = d["when"]
     names = d["files"]
     pages = d.get("pages")
-    row("Receipt no.", receipt_number(when))
+    row("OR no." if tin else "Receipt no.", receipt_number(when))
     row("Date", when.strftime("%b %d, %Y  %I:%M %p"))
+    if d.get("customer_tin"):
+        row("Customer TIN", d["customer_tin"])
     row("File", names[0] if len(names) == 1 else f"{len(names)} files")
     row("Paper", d["paper"])
     row("Mode / Quality", f"{MODES.get(d['mode'], 'Color')} / {d['quality'].title()}")
@@ -126,6 +131,12 @@ def _draw(page, d):
     y += 4
     rule()
     center("Thank you!", 10, "hebo", gap=1.6)
+    if tin:
+        center("This serves as an Official Receipt.", 7, color=MUTED)
+        center("Issued by a registered business.", 7, color=MUTED)
+    else:
+        center("THIS IS NOT AN OFFICIAL RECEIPT.", 7, "hebo", color=MUTED)
+        center("It is only a breakdown of the price.", 7, color=MUTED)
     center("Keep this receipt for your records.", 7, color=MUTED)
     return y + M
 
@@ -146,17 +157,27 @@ class ReceiptDialog(QDialog):
         super().__init__(parent)
         data.setdefault("when", datetime.datetime.now())
         self.number = receipt_number(data["when"])
+        self.data = data
         self.pdf = build_receipt_pdf(data)
         self.setWindowTitle(f"Receipt {self.number}")
         self.resize(400, 680)
 
         layout = QVBoxLayout(self)
+        if data.get("tin"):
+            tin_row = QHBoxLayout()
+            tin_row.addWidget(QLabel("Customer TIN"))
+            tin_input = QLineEdit()
+            tin_input.setPlaceholderText("optional, 000-000-000-00000")
+            tin_input.setMaxLength(20)
+            tin_input.textChanged.connect(self._customer_tin_changed)
+            tin_row.addWidget(tin_input, 1)
+            layout.addLayout(tin_row)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        label = QLabel()
-        label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        label.setPixmap(self._pixmap(2.0))
-        scroll.setWidget(label)
+        self.label = QLabel()
+        self.label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self.label.setPixmap(self._pixmap(2.0))
+        scroll.setWidget(self.label)
         layout.addWidget(scroll, 1)
 
         row = QHBoxLayout()
@@ -170,6 +191,11 @@ class ReceiptDialog(QDialog):
         row.addStretch()
         row.addWidget(save_btn)
         layout.addLayout(row)
+
+    def _customer_tin_changed(self, text):
+        self.data["customer_tin"] = text.strip()
+        self.pdf = build_receipt_pdf(self.data)
+        self.label.setPixmap(self._pixmap(2.0))
 
     def _pixmap(self, scale):
         with fitz.open("pdf", self.pdf) as doc:
