@@ -21,10 +21,10 @@ DEFAULT_SETTINGS = {
         {"name": "A4 (8.27x11.69 in)", "width_in": 8.27, "height_in": 11.69, "price": 1.25},
     ],
     "ink_prices": {
-        "C": 15.0,
-        "M": 15.0,
-        "Y": 12.0,
-        "K": 8.0,
+        "C": 10.0,
+        "M": 10.0,
+        "Y": 10.0,
+        "K": 13.0,
     },
     "default_percentages": {
         "labor": 5.0,

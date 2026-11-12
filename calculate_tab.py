@@ -55,6 +55,7 @@ class CalculateTab(QWidget):
         self.load_worker = None
 
         self.resolved_pdf_path = None
+        self.original_pdf_path = None 
         self.page_count = 1
         self.current_page = 0
         self.is_approx = False
@@ -238,6 +239,7 @@ class CalculateTab(QWidget):
         self.paper_note.hide()
         self._loading = False
         self.resolved_pdf_path = None
+        self.original_pdf_path = None
         self.page_count = 1
         self.current_page = 0
         self.is_approx = False
@@ -365,6 +367,7 @@ class CalculateTab(QWidget):
             return
         self._load_id += 1
         load_id = self._load_id
+        self.file_label.setText(self.file_label.text().removesuffix(" · edited"))
         self._analysis_cache = {}
         self._loading = True
         self.preview.show_placeholder("Loading preview...")
@@ -393,6 +396,7 @@ class CalculateTab(QWidget):
             return
         self._loading = False
         self.resolved_pdf_path = pdf_path
+        self.original_pdf_path = pdf_path
         if self.worker is None or not self.worker.isRunning():
             cleanup_temp_dirs(keep_path=pdf_path)
         self._detect_paper()
@@ -510,9 +514,30 @@ class CalculateTab(QWidget):
             return
         dialog = FullPreviewDialog(self.resolved_pdf_path, self.page_count, parent=self,
                                    mode=self._current_mode(), included=self._selected_pages(),
-                                   fit_paper=self._fit_paper())
+                                   fit_paper=self._fit_paper(),
+                                   original_path=self.original_pdf_path, doc_name=self._doc_name())
         dialog.exec()
+        edited = dialog.edited_path()
+        pages, included = dialog.page_count, dialog.included
         dialog.deleteLater()
+        if edited:
+            self._adopt_edited_pdf(edited, pages, included)
+
+    def _doc_name(self):
+        return os.path.splitext(os.path.basename(self.sources[0]))[0] if self.sources else "document"
+
+    def _adopt_edited_pdf(self, path, page_count, included):
+        """Use the PDF edited in Full Preview for the preview, the price and printing."""
+        self.resolved_pdf_path = path
+        self._analysis_cache = {}
+        self.page_count = page_count
+        self.current_page = min(self.current_page, page_count - 1)
+        self.pages_input.setText(format_page_ranges(included) if included else "")
+        self._clear_results()
+        if not self.file_label.text().endswith(" · edited"):
+            self.file_label.setText(self.file_label.text() + " · edited")
+        self.status_label.setText("Document edited. Press Calculate to update the price.")
+        self._show_current_page()
 
     def _calculate(self):
         if not self.file_path:

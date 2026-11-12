@@ -98,6 +98,7 @@ QPushButton#secondary {{
 }}
 QPushButton#secondary:hover {{ background: {SOFT}; }}
 QPushButton#secondary:pressed {{ background: #cdeef5; }}
+QPushButton#secondary:checked {{ background: {PRIMARY}; color: white; }}
 QPushButton#secondary:disabled {{ color: #9fb0bf; border-color: {BORDER}; background: {CARD_BG}; }}
 
 /* ---------- inputs ---------- */
