@@ -1,11 +1,16 @@
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFrame, QLineEdit, QMessageBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QDialog, QDialogButtonBox, QFormLayout, QScrollArea
+    QHeaderView, QDialog, QDialogButtonBox, QFormLayout, QScrollArea, QCheckBox
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QRectF, QSize, QVariantAnimation
+from PyQt6.QtGui import QPainter, QColor
+import sys
 
 import pricing
+import autostart
+import updater
+from style import PRIMARY, TEXT
 
 QUALITY_LABELS = [("draft", "Draft"), ("standard", "Standard"), ("high", "High")]
 
@@ -17,6 +22,64 @@ PCT_LABELS = [
     ("printer", "Printer %"),
     ("profit", "Profit %"),
 ]
+
+
+class ToggleSwitch(QCheckBox):
+    TRACK_W, TRACK_H = 42, 22
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._pos = 0.0
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(120)
+        self._anim.valueChanged.connect(self._set_pos)
+        self.toggled.connect(self._animate)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def _set_pos(self, v):
+        self._pos = v
+        self.update()
+
+    def _animate(self, on):
+        self._anim.stop()
+        self._anim.setStartValue(self._pos)
+        self._anim.setEndValue(1.0 if on else 0.0)
+        self._anim.start()
+
+    def setChecked(self, on):  # programmatic changes snap instead of sliding
+        super().setChecked(on)
+        self._anim.stop()
+        self._pos = 1.0 if on else 0.0
+        self.update()
+
+    def hitButton(self, pos):
+        return self.rect().contains(pos)  # whole row is clickable, not just the switch
+
+    def sizeHint(self):
+        text_w = self.fontMetrics().horizontalAdvance(self.text())
+        return QSize(self.TRACK_W + (10 + text_w if self.text() else 0), self.TRACK_H + 4)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        off, on = QColor("#cbd5e1"), QColor(PRIMARY)
+        t = self._pos
+        track_color = QColor(*(int(off.getRgb()[i] + (on.getRgb()[i] - off.getRgb()[i]) * t) for i in range(3)))
+
+        y = (self.height() - self.TRACK_H) / 2
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(track_color)
+        p.drawRoundedRect(QRectF(0, y, self.TRACK_W, self.TRACK_H), self.TRACK_H / 2, self.TRACK_H / 2)
+
+        d = self.TRACK_H - 4
+        x = 2 + (self.TRACK_W - d - 4) * t
+        p.setBrush(QColor("white"))
+        p.drawEllipse(QRectF(x, y + 2, d, d))
+
+        if self.text():
+            p.setPen(QColor(TEXT))
+            p.drawText(QRectF(self.TRACK_W + 10, 0, self.width() - self.TRACK_W - 10, self.height()),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text())
 
 
 def card(layout_cls=QVBoxLayout):
@@ -72,10 +135,11 @@ class PaperSizeDialog(QDialog):
 
 
 class SettingsTab(QWidget):
-    def __init__(self, settings, on_save, parent=None):
+    def __init__(self, settings, on_save, on_check_update=None, parent=None):
         super().__init__(parent)
         self.settings = settings
         self.on_save = on_save
+        self.on_check_update = on_check_update
         self.ink_inputs = {}
         self.pct_inputs = {}
         self.quality_inputs = {}
@@ -95,6 +159,29 @@ class SettingsTab(QWidget):
         root = QVBoxLayout(content)
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(14)
+
+        # ---- General ----
+        gen_card, gen_layout = card()
+        root.addWidget(gen_card)
+
+        gen_header = QLabel("General")
+        gen_header.setObjectName("cardHeader")
+        gen_layout.addWidget(gen_header)
+
+        if sys.platform.startswith("win"):
+            self.autostart_box = ToggleSwitch("Open automatically when my PC turns on")
+            self.autostart_box.setChecked(autostart.is_autostart_enabled())
+            self.autostart_box.toggled.connect(self._toggle_autostart)
+            gen_layout.addWidget(self.autostart_box)
+
+        update_row = QHBoxLayout()
+        update_row.addWidget(QLabel(f"Version {updater.APP_VERSION}"))
+        update_row.addStretch()
+        check_btn = QPushButton("Check for updates")
+        check_btn.setObjectName("secondary")
+        check_btn.clicked.connect(lambda: self.on_check_update and self.on_check_update())
+        update_row.addWidget(check_btn)
+        gen_layout.addLayout(update_row)
 
         # ---- Paper sizes ----
         paper_card, paper_layout = card()
@@ -240,6 +327,18 @@ class SettingsTab(QWidget):
         save_row.addWidget(save_btn)
         root.addLayout(save_row)
         root.addStretch()
+
+    def _toggle_autostart(self, checked):
+        try:
+            if checked:
+                autostart.enable_autostart()
+            else:
+                autostart.disable_autostart()
+        except OSError as e:
+            QMessageBox.warning(self, "Autostart", f"Couldn't change the startup setting:\n{e}")
+            self.autostart_box.blockSignals(True)
+            self.autostart_box.setChecked(autostart.is_autostart_enabled())
+            self.autostart_box.blockSignals(False)
 
     def _refresh_paper_table(self):
         self.paper_table.setRowCount(len(self.settings["paper_sizes"]))

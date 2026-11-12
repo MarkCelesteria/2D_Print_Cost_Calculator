@@ -58,7 +58,10 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         self.calc_tab = CalculateTab(self.settings)
-        self.settings_tab = SettingsTab(self.settings, on_save=self._on_settings_saved)
+        self.settings_tab = SettingsTab(
+            self.settings, on_save=self._on_settings_saved,
+            on_check_update=lambda: self._start_update_check(manual=True),
+        )
         tabs.addTab(self.calc_tab, "Calculate")
         tabs.addTab(self.settings_tab, "Settings")
 

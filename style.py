@@ -16,7 +16,7 @@ QWidget {{
     font-family: "Segoe UI";
     font-size: 13px;
 }}
-QLabel {{ background: transparent; }}
+QLabel, QCheckBox {{ background: transparent; }}
 QToolTip {{
     background: {TEXT}; color: white; border: none; padding: 4px 8px;
 }}
