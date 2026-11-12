@@ -3,10 +3,11 @@ import os
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFrame, QComboBox, QLineEdit, QFileDialog, QMessageBox, QTableWidget,
-    QTableWidgetItem, QHeaderView, QScrollArea
+    QTableWidgetItem, QHeaderView, QScrollArea, QInputDialog
 )
 from PyQt6.QtCore import Qt
 
+import pricing
 from preview_widget import PreviewWidget
 from worker import AnalyzeWorker, LoadDocumentWorker
 from analyzer import (render_pdf_page, apply_preview_mode, compute_cost, cleanup_temp_dirs,
@@ -14,6 +15,7 @@ from analyzer import (render_pdf_page, apply_preview_mode, compute_cost, cleanup
                       get_pdf_page_inches, fit_page_to_paper, SUPPORTED_EXTS, is_image)
 from full_preview_dialog import FullPreviewDialog
 from print_helper import print_pdf
+from receipt import ReceiptDialog
 
 PCT_LABELS = [
     ("labor", "Labor %"),
@@ -58,6 +60,7 @@ class CalculateTab(QWidget):
 
         self.pct_inputs = {}
         self.quality_inputs = {}
+        self.manual_discount = None
         self.setAcceptDrops(True)
         self._build()
 
@@ -196,11 +199,6 @@ class CalculateTab(QWidget):
             self.pct_inputs[key] = field
             opts_layout.addWidget(field, r, c + 1)
 
-        opts_layout.addWidget(QLabel("Discount %"), 6, 0)
-        self.discount_input = QLineEdit(str(self.settings.get("default_discount", 0.0)))
-        self.discount_input.setFixedWidth(60)
-        opts_layout.addWidget(self.discount_input, 6, 1)
-
         opts_layout.addWidget(QLabel("Print pages"), 3, 0)
         self.pages_input = QLineEdit()
         self.pages_input.setPlaceholderText("All pages (or e.g. 1-6, 8-9, 11, 12)")
@@ -221,16 +219,15 @@ class CalculateTab(QWidget):
         self._refresh_paper_options()
         for key, field in self.pct_inputs.items():
             field.setText(str(self.settings["default_percentages"][key]))
-        self.discount_input.setText(str(self.settings.get("default_discount", 0.0)))
 
     def _on_refresh_clicked(self):
         for key, field in self.pct_inputs.items():
             field.setText(str(self.settings["default_percentages"][key]))
-        self.discount_input.setText(str(self.settings.get("default_discount", 0.0)))
         self._refresh_paper_options()
 
         self.file_path = None
         self.sources = []
+        self.manual_discount = None
         self._load_id += 1
         self._analysis_cache = {}
         self.doc_size = None
@@ -533,9 +530,8 @@ class CalculateTab(QWidget):
 
         try:
             percentages = {key: float(field.text()) for key, field in self.pct_inputs.items()}
-            discount_pct = float(self.discount_input.text().strip() or 0)
         except ValueError:
-            QMessageBox.critical(self, "Invalid input", "Percentages and discount must be numbers.")
+            QMessageBox.critical(self, "Invalid input", "Percentages must be numbers.")
             return
 
         try:
@@ -549,6 +545,7 @@ class CalculateTab(QWidget):
         paper_name = self.paper_combo.currentText()
         self.paper = next(p for p in self.settings["paper_sizes"] if p["name"] == paper_name)
 
+        self.manual_discount = None
         self._clear_results()
         self._set_calculating(True)
         self.status_label.setText("Analyzing document...")
@@ -570,7 +567,6 @@ class CalculateTab(QWidget):
                 chosen, self.settings["ink_prices"], self.paper["price"], percentages,
                 page_numbers=selected_pages,
                 min_price_per_page=self.settings.get("min_price_per_page"),
-                discount_pct=discount_pct, ink_multiplier=ink_multiplier,
                 min_price_color=self.settings.get("min_price_color"),
                 color_threshold_pct=self.settings.get("color_threshold_pct", 0.5),
             )
@@ -581,7 +577,7 @@ class CalculateTab(QWidget):
         self.worker = AnalyzeWorker(
             self.resolved_pdf_path, self.file_path,
             self.settings["ink_prices"], self.paper["price"], percentages, self.is_approx, mode,
-            min_price=self.settings.get("min_price_per_page"), discount_pct=discount_pct,
+            min_price=self.settings.get("min_price_per_page"),
             ink_multiplier=ink_multiplier,
             min_price_color=self.settings.get("min_price_color"),
             color_threshold_pct=self.settings.get("color_threshold_pct", 0.5),
@@ -647,9 +643,11 @@ class CalculateTab(QWidget):
         r.addWidget(val)
         layout.addLayout(r)
 
-    def _render_results(self, result, paper, is_approx):
+    def _render_results(self, result, paper, is_approx, notify=True):
+        self._result, self._result_paper, self._result_approx = result, paper, is_approx
+        self._apply_discounts(result)
         cb = getattr(self, "on_calculated", None)
-        if cb:
+        if cb and notify:
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(800, cb)
         summary_card, summary_layout = card()
@@ -688,9 +686,8 @@ class CalculateTab(QWidget):
         if result["min_topup"] > 0:
             self._row(summary_layout, "Minimum price top-up", f"{result['min_topup']:.2f}", muted=True)
 
-        if result["discount_amount"] > 0:
-            self._row(summary_layout, f"Discount ({result['discount_pct']:g}%)",
-                      f"-{result['discount_amount']:.2f}", muted=True)
+        for label, amount in result["discount_lines"]:
+            self._row(summary_layout, label, f"-{amount:.2f}", muted=True)
 
         line2 = QFrame()
         line2.setFrameShape(QFrame.Shape.HLine)
@@ -706,10 +703,23 @@ class CalculateTab(QWidget):
         total_row.addWidget(total_value)
         summary_layout.addLayout(total_row)
 
+        if self.settings.get("discounts"):
+            md = self.manual_discount
+            disc_btn = QPushButton(f"🏷 {md['name']} (change)" if md else "🏷 Apply Discount")
+            disc_btn.setObjectName("secondary")
+            disc_btn.clicked.connect(self._choose_discount)
+            summary_layout.addWidget(disc_btn)
+
         print_btn = QPushButton("🖨 Print")
         print_btn.setObjectName("secondary")
         print_btn.clicked.connect(self._on_print_clicked)
         summary_layout.addWidget(print_btn)
+
+        receipt_data = self._receipt_data(result, paper)
+        receipt_btn = QPushButton("🧾 View Receipt")
+        receipt_btn.setObjectName("secondary")
+        receipt_btn.clicked.connect(lambda: ReceiptDialog(receipt_data, self).exec())
+        summary_layout.addWidget(receipt_btn)
 
         if is_approx:
             note = QLabel("Approximate: .docx text coverage is estimated (install LibreOffice for exact results).")
@@ -758,6 +768,47 @@ class CalculateTab(QWidget):
 
         self.results_layout.addWidget(table_card)
         self.results_layout.addStretch()
+
+    def _apply_discounts(self, result):
+        """Bulk (automatic) + the chosen named discount, both taken off the gross total."""
+        gross = result["gross"]
+        bulk = min(100.0, pricing.bulk_pct(self.settings.get("bulk_discounts"), result["num_pages"]))
+        lines = []
+        if bulk:
+            lines.append((f"Bulk discount ({bulk:g}%)", gross * bulk / 100))
+        md = self.manual_discount
+        if md:
+            pct = min(md["pct"], 100.0 - bulk)
+            lines.append((f"{md['name']} ({pct:g}%)", gross * pct / 100))
+        amount = sum(a for _, a in lines)
+        result.update(discount_lines=lines, discount_amount=amount,
+                      discount_pct=amount / gross * 100 if gross else 0.0, total=gross - amount)
+
+    def _choose_discount(self):
+        discounts = self.settings.get("discounts", [])
+        items = ["No discount"] + [f"{d['name']} ({d['pct']:g}%)" for d in discounts]
+        names = [d["name"] for d in discounts]
+        current = names.index(self.manual_discount["name"]) + 1 if self.manual_discount and \
+            self.manual_discount["name"] in names else 0
+        item, ok = QInputDialog.getItem(self, "Apply discount", "Choose a discount:", items, current, False)
+        if not ok:
+            return
+        i = items.index(item)
+        self.manual_discount = dict(discounts[i - 1]) if i else None
+        self._clear_results()
+        self._render_results(self._result, self._result_paper, self._result_approx, notify=False)
+
+    def _receipt_data(self, result, paper):
+        return {
+            "shop": self.settings.get("shop_name") or "Print Cost Calculator",
+            "files": [os.path.basename(p) for p in self.sources],
+            "paper": paper["name"],
+            "mode": getattr(self, "print_mode", "color"),
+            "quality": getattr(self, "print_quality", "standard"),
+            "pages": getattr(self, "print_pages", None),
+            "page_count": self.page_count,
+            "result": result,
+        }
 
     def _on_print_clicked(self):
         if not self.resolved_pdf_path:

@@ -1,0 +1,175 @@
+import datetime
+import os
+
+import fitz
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
+    QFileDialog, QMessageBox,
+)
+
+from analyzer import format_page_ranges
+
+W, M = 288, 20  # page width (4 in) and side margin, in points
+INK = (0.06, 0.11, 0.18)
+MUTED = (0.39, 0.45, 0.55)
+LOGO = [(0.0, 0.68, 0.94), (0.93, 0.0, 0.55), (1.0, 0.95, 0.0), (0.14, 0.12, 0.13)]
+MODES = {"color": "Color", "grayscale": "Grayscale", "bw": "Black & White"}
+CATS = [("labor", "Labor"), ("maintenance", "Maintenance"), ("electricity", "Electricity"),
+        ("spoilage", "Spoilage"), ("printer", "Printer"), ("profit", "Profit")]
+
+
+def receipt_number(when):
+    return "PCC-" + when.strftime("%Y%m%d-%H%M%S")
+
+
+def _fit(text, size, width, font="helv"):
+    if fitz.get_text_length(text, fontname=font, fontsize=size) <= width:
+        return text
+    while text and fitz.get_text_length(text + "...", fontname=font, fontsize=size) > width:
+        text = text[:-1]
+    return text + "..."
+
+
+def _draw(page, d):
+    """Draws the receipt top to bottom and returns the height it needs."""
+    r = d["result"]
+    y = M
+
+    def center(text, size, font="helv", color=INK, gap=1.5):
+        nonlocal y
+        w = fitz.get_text_length(text, fontname=font, fontsize=size)
+        page.insert_text(((W - w) / 2, y), text, fontname=font, fontsize=size, color=color)
+        y += size * gap
+
+    def row(label, value, size=9, font="helv", color=INK, label_color=MUTED):
+        nonlocal y
+        value = _fit(value, size, W - 2 * M - 60, font)
+        vw = fitz.get_text_length(value, fontname=font, fontsize=size)
+        page.insert_text((M, y), _fit(label, size, W - 2 * M - vw - 8, font),
+                         fontname=font, fontsize=size, color=label_color)
+        page.insert_text((W - M - vw, y), value, fontname=font, fontsize=size, color=color)
+        y += size * 1.7
+
+    def rule(dashed=True):
+        nonlocal y
+        y += 2
+        page.draw_line((M, y), (W - M, y), color=MUTED, width=0.6, dashes="[2 2] 0" if dashed else None)
+        y += 13
+
+    # logo: the four ink dots
+    s, gap = 14, 3
+    x0 = (W - (2 * s + gap)) / 2
+    for i, col in enumerate(LOGO):
+        c = (x0 + (i % 2) * (s + gap) + s / 2, y + (i // 2) * (s + gap) + s / 2)
+        page.draw_circle(c, s / 2, color=None, fill=col)
+    y += 2 * s + gap + 16
+
+    center(d["shop"], 13, "hebo", gap=1.4)
+    center("PRINT RECEIPT", 8, color=MUTED, gap=1.2)
+    y += 6
+    rule()
+
+    when = d["when"]
+    names = d["files"]
+    pages = d.get("pages")
+    row("Receipt no.", receipt_number(when))
+    row("Date", when.strftime("%b %d, %Y  %I:%M %p"))
+    row("File", names[0] if len(names) == 1 else f"{len(names)} files")
+    row("Paper", d["paper"])
+    row("Mode / Quality", f"{MODES.get(d['mode'], 'Color')} / {d['quality'].title()}")
+    row("Pages", f"{format_page_ranges(pages)} ({len(pages)} of {d['page_count']})" if pages
+        else f"All ({r['num_pages']})")
+    row("Color / B&W", f"{r['color_pages']} / {r['num_pages'] - r['color_pages']}")
+    rule()
+
+    ink_label = "Ink" + (f" (x{r['ink_multiplier']:g})" if r["ink_multiplier"] != 1 else "")
+    row(ink_label, f"{r['ink_total']:.2f}", label_color=INK)
+    row("Paper", f"{r['paper_total']:.2f}", label_color=INK)
+    row("Subtotal", f"{r['subtotal']:.2f}", font="hebo", label_color=INK)
+    y += 3
+    for key, label in CATS:
+        pct = r["percentages"].get(key, 0)
+        if pct:
+            row(f"{label} ({pct:g}%)", f"{r['category_amounts'].get(key, 0):.2f}")
+    if r["min_topup"] > 0:
+        row("Minimum price top-up", f"{r['min_topup']:.2f}")
+    for label, amount in r.get("discount_lines", []):
+        row(label, f"-{amount:.2f}")
+    rule(dashed=False)
+
+    row("TOTAL", f"{r['total']:.2f}", size=13, font="hebo", label_color=INK)
+    y += 4
+    rule()
+    center("Thank you!", 10, "hebo", gap=1.6)
+    center("Keep this receipt for your records.", 7, color=MUTED)
+    return y + M
+
+
+def build_receipt_pdf(d):
+    probe = fitz.open()
+    height = _draw(probe.new_page(width=W, height=2000), d)  # first pass: measure
+    probe.close()
+    doc = fitz.open()
+    _draw(doc.new_page(width=W, height=height), d)  # second pass: exact height
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+class ReceiptDialog(QDialog):
+    def __init__(self, data, parent=None):
+        super().__init__(parent)
+        data.setdefault("when", datetime.datetime.now())
+        self.number = receipt_number(data["when"])
+        self.pdf = build_receipt_pdf(data)
+        self.setWindowTitle(f"Receipt {self.number}")
+        self.resize(400, 680)
+
+        layout = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        label = QLabel()
+        label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        label.setPixmap(self._pixmap(2.0))
+        scroll.setWidget(label)
+        layout.addWidget(scroll, 1)
+
+        row = QHBoxLayout()
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("secondary")
+        close_btn.clicked.connect(self.accept)
+        save_btn = QPushButton("Download receipt")
+        save_btn.setObjectName("primary")
+        save_btn.clicked.connect(self._download)
+        row.addWidget(close_btn)
+        row.addStretch()
+        row.addWidget(save_btn)
+        layout.addLayout(row)
+
+    def _pixmap(self, scale):
+        with fitz.open("pdf", self.pdf) as doc:
+            pix = doc[0].get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+        img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888).copy()
+        pm = QPixmap.fromImage(img)
+        pm.setDevicePixelRatio(scale)
+        return pm
+
+    def _download(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Download receipt", f"{self.number}.pdf", "PDF (*.pdf);;PNG image (*.png)")
+        if not path:
+            return
+        if not os.path.splitext(path)[1]:
+            path += ".pdf"
+        try:
+            if path.lower().endswith(".png"):
+                self._pixmap(3.0).save(path, "PNG")
+            else:
+                with open(path, "wb") as f:
+                    f.write(self.pdf)
+        except OSError as e:
+            QMessageBox.warning(self, "Couldn't save", str(e))
+            return
+        QMessageBox.information(self, "Saved", f"Receipt saved to:\n{path}")

@@ -134,6 +134,65 @@ class PaperSizeDialog(QDialog):
             QMessageBox.critical(self, "Invalid input", "Please fill all fields correctly.")
 
 
+class DiscountDialog(QDialog):
+    def __init__(self, parent=None, existing=None):
+        super().__init__(parent)
+        self.setWindowTitle("Discount")
+        form = QFormLayout(self)
+        self.name_input = QLineEdit(existing["name"] if existing else "")
+        self.pct_input = QLineEdit(f"{existing['pct']:g}" if existing else "")
+        form.addRow("Name:", self.name_input)
+        form.addRow("Discount %:", self.pct_input)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+        self.result_data = None
+
+    def _on_accept(self):
+        try:
+            name = self.name_input.text().strip()
+            pct = float(self.pct_input.text())
+            if not name or not 0 < pct <= 100:
+                raise ValueError
+            self.result_data = {"name": name, "pct": pct}
+            self.accept()
+        except ValueError:
+            QMessageBox.critical(self, "Invalid input", "Enter a name and a percentage between 0 and 100.")
+
+
+class BulkDialog(QDialog):
+    def __init__(self, parent=None, existing=None):
+        super().__init__(parent)
+        self.setWindowTitle("Bulk discount")
+        form = QFormLayout(self)
+        self.min_input = QLineEdit(str(existing["min"]) if existing else "")
+        self.max_input = QLineEdit(str(existing["max"] or "") if existing else "")
+        self.max_input.setPlaceholderText("no limit")
+        self.pct_input = QLineEdit(f"{existing['pct']:g}" if existing else "")
+        form.addRow("From (pages):", self.min_input)
+        form.addRow("To (pages):", self.max_input)
+        form.addRow("Discount %:", self.pct_input)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+        self.result_data = None
+
+    def _on_accept(self):
+        try:
+            lo = int(self.min_input.text())
+            raw = self.max_input.text().strip()
+            hi = int(raw) if raw else None
+            pct = float(self.pct_input.text())
+            if lo < 1 or (hi is not None and hi < lo) or not 0 < pct <= 100:
+                raise ValueError
+            self.result_data = {"min": lo, "max": hi, "pct": pct}
+            self.accept()
+        except ValueError:
+            QMessageBox.critical(self, "Invalid input", "Check the page range and a percentage between 0 and 100.")
+
+
 class SettingsTab(QWidget):
     def __init__(self, settings, on_save, on_check_update=None, parent=None):
         super().__init__(parent)
@@ -285,7 +344,7 @@ class SettingsTab(QWidget):
         rules_layout.addWidget(rules_header, 0, 0, 1, 4)
         rules_sub = QLabel("Each page has a minimum, added up across the document (e.g. 2 color at 5 + 1 B&W at 3 = 13). "
                            "If the total after all percentages is below that sum, it is topped up to it. Leave blank to turn off. "
-                           "If only B&W is set, it also applies to color pages. Discount is taken off the final total.")
+                           "If only B&W is set, it also applies to color pages.")
         rules_sub.setWordWrap(True)
         rules_sub.setObjectName("muted")
         rules_layout.addWidget(rules_sub, 1, 0, 1, 4)
@@ -302,18 +361,46 @@ class SettingsTab(QWidget):
         self.min_price_color_input.setFixedWidth(80)
         rules_layout.addWidget(self.min_price_color_input, 2, 3)
 
-        rules_layout.addWidget(QLabel("Discount %"), 3, 0)
-        self.discount_input = QLineEdit(str(self.settings.get("default_discount", 0.0)))
-        self.discount_input.setFixedWidth(80)
-        rules_layout.addWidget(self.discount_input, 3, 1)
-
-        rules_layout.addWidget(QLabel("Color page threshold %"), 3, 2)
+        rules_layout.addWidget(QLabel("Color page threshold %"), 3, 0)
         self.color_threshold_input = QLineEdit(str(self.settings.get("color_threshold_pct", 0.5)))
         self.color_threshold_input.setFixedWidth(80)
         self.color_threshold_input.setToolTip(
             "A page counts as Color only if at least this % of it is colored. "
             "Raise it to ignore tiny colored items.")
-        rules_layout.addWidget(self.color_threshold_input, 3, 3)
+        rules_layout.addWidget(self.color_threshold_input, 3, 1)
+
+        # ---- Discounts ----
+        disc_card, disc_layout = card()
+        root.addWidget(disc_card)
+        h = QLabel("Discounts")
+        h.setObjectName("cardHeader")
+        disc_layout.addWidget(h)
+        sub = QLabel("Named discounts. After calculating, click Apply Discount on the results to use one.")
+        sub.setObjectName("muted")
+        sub.setWordWrap(True)
+        disc_layout.addWidget(sub)
+        self.discount_table = self._make_table(["Name", "Discount %"])
+        disc_layout.addWidget(self.discount_table)
+        disc_layout.addLayout(self._button_row(
+            lambda: self._add_item("discounts", DiscountDialog),
+            lambda: self._edit_item("discounts", DiscountDialog, self.discount_table),
+            lambda: self._delete_item("discounts", self.discount_table)))
+
+        bh = QLabel("Bulk discount (automatic)")
+        bh.setObjectName("cardHeader")
+        disc_layout.addWidget(bh)
+        bsub = QLabel("Applied automatically by the number of pages printed. Leave To blank for no upper limit. "
+                      "It adds to a named discount if you apply one.")
+        bsub.setObjectName("muted")
+        bsub.setWordWrap(True)
+        disc_layout.addWidget(bsub)
+        self.bulk_table = self._make_table(["From (pages)", "To (pages)", "Discount %"])
+        disc_layout.addWidget(self.bulk_table)
+        disc_layout.addLayout(self._button_row(
+            lambda: self._add_item("bulk_discounts", BulkDialog),
+            lambda: self._edit_item("bulk_discounts", BulkDialog, self.bulk_table),
+            lambda: self._delete_item("bulk_discounts", self.bulk_table)))
+        self._refresh_discount_tables()
 
         save_row = QHBoxLayout()
         reset_btn = QPushButton("Reset to Default")
@@ -339,6 +426,61 @@ class SettingsTab(QWidget):
             self.autostart_box.blockSignals(True)
             self.autostart_box.setChecked(autostart.is_autostart_enabled())
             self.autostart_box.blockSignals(False)
+
+    def _make_table(self, headers):
+        t = QTableWidget(0, len(headers))
+        t.setHorizontalHeaderLabels(headers)
+        t.verticalHeader().setVisible(False)
+        t.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        t.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        t.setMinimumHeight(120)
+        return t
+
+    def _button_row(self, add, edit, delete):
+        row = QHBoxLayout()
+        for text, fn in (("+ Add", add), ("Edit", edit), ("Delete", delete)):
+            b = QPushButton(text)
+            b.setObjectName("secondary")
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch()
+        return row
+
+    def _refresh_discount_tables(self):
+        self.settings["bulk_discounts"].sort(key=lambda b: b["min"])
+        rows = [(self.discount_table, [[d["name"], f"{d['pct']:g}%"] for d in self.settings["discounts"]]),
+                (self.bulk_table, [[str(b["min"]), str(b["max"]) if b["max"] else "and up", f"{b['pct']:g}%"]
+                                   for b in self.settings["bulk_discounts"]])]
+        for table, data in rows:
+            table.setRowCount(len(data))
+            for i, values in enumerate(data):
+                for col, val in enumerate(values):
+                    item = QTableWidgetItem(val)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    table.setItem(i, col, item)
+
+    def _add_item(self, key, dlg_cls):
+        dlg = dlg_cls(self)
+        if dlg.exec() and dlg.result_data:
+            self.settings[key].append(dlg.result_data)
+            self._refresh_discount_tables()
+
+    def _edit_item(self, key, dlg_cls, table):
+        row = table.currentRow()
+        if row < 0:
+            return
+        dlg = dlg_cls(self, existing=self.settings[key][row])
+        if dlg.exec() and dlg.result_data:
+            self.settings[key][row] = dlg.result_data
+            self._refresh_discount_tables()
+
+    def _delete_item(self, key, table):
+        row = table.currentRow()
+        if row < 0:
+            return
+        del self.settings[key][row]
+        self._refresh_discount_tables()
 
     def _refresh_paper_table(self):
         self.paper_table.setRowCount(len(self.settings["paper_sizes"]))
@@ -388,7 +530,7 @@ class SettingsTab(QWidget):
         self.settings["min_price_per_page"] = defaults["min_price_per_page"]
         self.settings["min_price_color"] = defaults["min_price_color"]
         self.settings["color_threshold_pct"] = defaults["color_threshold_pct"]
-        self.settings["default_discount"] = defaults["default_discount"]
+        self.discount_input.setText(str(self.settings["default_discount"]))
         self.settings["quality_multipliers"] = defaults["quality_multipliers"]
 
         pricing.save_settings(self.settings)
@@ -422,10 +564,6 @@ class SettingsTab(QWidget):
             if not 0 <= threshold <= 100:
                 raise ValueError
             self.settings["color_threshold_pct"] = threshold
-            discount = float(self.discount_input.text().strip() or 0)
-            if not 0 <= discount <= 100:
-                raise ValueError
-            self.settings["default_discount"] = discount
             for key, field in self.quality_inputs.items():
                 mult = float(field.text())
                 if mult <= 0:

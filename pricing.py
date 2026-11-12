@@ -38,7 +38,8 @@ DEFAULT_SETTINGS = {
     "min_price_per_page": None,
     "min_price_color": None,
     "color_threshold_pct": 0.5,
-    "default_discount": 0.0,
+    "discounts": [],
+    "bulk_discounts": [],
     "asked_about_autostart": False,
 }
 
@@ -61,6 +62,12 @@ def load_settings() -> dict:
         for k, v in DEFAULT_SETTINGS[group].items():
             data[group].setdefault(k, v)
     return data
+
+
+def bulk_pct(tiers, pages):
+    """Highest bulk discount % whose page range contains `pages`."""
+    return max((t["pct"] for t in tiers or []
+                if t["min"] <= pages and (not t.get("max") or pages <= t["max"])), default=0.0)
 
 
 def save_settings(settings: dict):
