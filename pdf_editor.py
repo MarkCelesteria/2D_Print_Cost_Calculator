@@ -1,13 +1,17 @@
 """Edits the images of a PDF: move, resize, delete, add. Works on a private copy, never the original."""
+import atexit
 import contextlib
 import io
 import os
 import shutil
+import tempfile
+import time
 
-import fitz
+try:
+    import pymupdf as fitz
+except ImportError:  # older PyMuPDF
+    import fitz
 from PIL import Image, ImageOps
-
-from analyzer import make_temp_dir
 
 MAX_UNDO = 20
 MIN_SIZE = 8.0          # smallest image side, in points
@@ -17,6 +21,38 @@ MARGIN = 18.0         # distance kept from the page edge by Top / Bottom / Left 
 
 class EditError(Exception):
     pass
+
+_EDIT_DIRS = set()
+
+
+def _make_edit_dir(keep_path=None):
+    keep = os.path.abspath(keep_path) if keep_path else None
+    for d in list(_EDIT_DIRS):  # folders of earlier sessions, unless the document being edited lives there
+        if keep and keep.startswith(os.path.abspath(d) + os.sep):
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+        _EDIT_DIRS.discard(d)
+    path = tempfile.mkdtemp(prefix="printcost_edit_")
+    _EDIT_DIRS.add(path)
+    return path
+
+
+@atexit.register
+def _cleanup_edit_dirs():
+    for d in list(_EDIT_DIRS):
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _replace(src, dst, tries=20):
+    """os.replace, retried for a moment: on Windows an antivirus or indexer can briefly hold a file."""
+    for n in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if n == tries - 1:
+                raise
+            time.sleep(0.05)
 
 
 def _encode_image(source):
@@ -44,7 +80,7 @@ class PdfEditor:
     def __init__(self, source_path, original_path=None):
         self._source = source_path
         self.original = original_path or source_path   # what Reset goes back to
-        self.dir = make_temp_dir()
+        self.dir = _make_edit_dir(keep_path=source_path)
         self.path = os.path.join(self.dir, "edited.pdf")
         shutil.copyfile(source_path, self.path)
         self._undo = []     # (snapshot file, state) pairs
@@ -151,7 +187,7 @@ class PdfEditor:
                 os.remove(tmp)
             raise
         doc.close()
-        os.replace(tmp, self.path)
+        _replace(tmp, self.path)
 
     @staticmethod
     def _page(doc, index):
@@ -383,7 +419,7 @@ class PdfEditor:
             return False
         self._stash(self._redo)            # where we are now can be redone
         snap, self.state = self._undo.pop()
-        os.replace(snap, self.path)
+        _replace(snap, self.path)
         self._edits -= 1
         return True
 
@@ -392,7 +428,7 @@ class PdfEditor:
             return False
         self._stash(self._undo)
         snap, self.state = self._redo.pop()
-        os.replace(snap, self.path)
+        _replace(snap, self.path)
         self._edits += 1
         return True
 

@@ -3,7 +3,7 @@ import os
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFrame, QComboBox, QLineEdit, QFileDialog, QMessageBox, QTableWidget,
-    QTableWidgetItem, QHeaderView, QScrollArea, QInputDialog
+    QTableWidgetItem, QHeaderView, QScrollArea, QInputDialog, QDoubleSpinBox
 )
 from PyQt6.QtCore import Qt, QSize
 
@@ -209,7 +209,17 @@ class CalculateTab(QWidget):
         self.pages_input = QLineEdit()
         self.pages_input.setPlaceholderText("All pages (or e.g. 1-6, 8-9, 11, 12)")
         self.pages_input.textChanged.connect(self._on_pages_changed)
-        opts_layout.addWidget(self.pages_input, 4, 1, 1, 5)
+        opts_layout.addWidget(self.pages_input, 4, 1, 1, 3)
+        opts_layout.addWidget(QLabel("Margin"), 4, 4)
+        self.margin_spin = QDoubleSpinBox()  # print margin; always starts borderless
+        self.margin_spin.setRange(0.0, 50.0)
+        self.margin_spin.setDecimals(1)
+        self.margin_spin.setSingleStep(1.0)
+        self.margin_spin.setSuffix(" mm")
+        self.margin_spin.setSpecialValueText("Borderless")
+        self.margin_spin.setValue(0.0)
+        self.margin_spin.setToolTip("Space kept blank around every printed page. Borderless = none.")
+        opts_layout.addWidget(self.margin_spin, 4, 5)
 
         for i, (key, label) in enumerate(PCT_LABELS):
             r, c = 5 + i // 3, (i % 3) * 2
@@ -555,6 +565,11 @@ class CalculateTab(QWidget):
 
     def _adopt_edited_pdf(self, path, page_count, included):
         """Use the PDF edited in Full Preview for the preview, the price and printing."""
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "Edits not applied",
+                                "The edited file is no longer available, so your changes could not be applied. "
+                                "The document is unchanged.")
+            return
         try:
             before = get_document_page_size(self.resolved_pdf_path)
             after = get_document_page_size(path)
@@ -917,4 +932,5 @@ class CalculateTab(QWidget):
             job_name=job_name,
             pages=getattr(self, "print_pages", None),
             media=getattr(self, "print_media", ""),
+            margin_mm=self.margin_spin.value(),
         )

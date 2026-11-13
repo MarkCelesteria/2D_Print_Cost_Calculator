@@ -16,7 +16,7 @@ def _orientation(page):
     return QPageLayout.Orientation.Landscape if r.width > r.height else QPageLayout.Orientation.Portrait
 
 
-def _paint_document(printer, doc, grayscale, threshold=False, only_pages=None):
+def _paint_document(printer, doc, grayscale, threshold=False, only_pages=None, margin_mm=0.0):
     """Draw every page; landscape pages get a landscape sheet, portrait pages a portrait one."""
     pages = list(range(len(doc)))
     if only_pages:
@@ -53,6 +53,8 @@ def _paint_document(printer, doc, grayscale, threshold=False, only_pages=None):
             img = QImage(samples, pix.width, pix.height, stride, fmt)
 
             page_rect = printer.pageRect(QPrinter.Unit.DevicePixel)
+            m = margin_mm / 25.4 * printer.resolution()  # 0 = borderless: use the whole sheet
+            page_rect = page_rect.adjusted(m, m, -m, -m)
             scaled = img.scaled(
                 int(page_rect.width()), int(page_rect.height()),
                 Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
@@ -67,7 +69,7 @@ def _paint_document(printer, doc, grayscale, threshold=False, only_pages=None):
 
 
 def print_pdf(pdf_path, parent=None, paper=None, color_mode="color", quality="standard",
-              job_name="Print Cost Calculator", pages=None, media=""):
+              job_name="Print Cost Calculator", pages=None, media="", margin_mm=0.0):
     grayscale = color_mode != "color"
     notes = []
     if grayscale:
@@ -100,7 +102,7 @@ def print_pdf(pdf_path, parent=None, paper=None, color_mode="color", quality="st
 
     def on_paint(p):
         try:
-            _paint_document(p, doc, grayscale, color_mode == "bw", pages)
+            _paint_document(p, doc, grayscale, color_mode == "bw", pages, margin_mm)
         except Exception as e:
             notice(parent, "danger", "Print error", str(e))
 
