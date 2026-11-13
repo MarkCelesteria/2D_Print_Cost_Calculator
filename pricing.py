@@ -17,8 +17,23 @@ SETTINGS_PATH = os.path.join(_app_data_dir(), "settings.json")
 DEFAULT_SETTINGS = {
     "paper_sizes": [
         {"name": "Short (8.5x11 in)", "width_in": 8.5, "height_in": 11.0, "price": 1.0},
-        {"name": "Long / Legal (8.5x13 in)", "width_in": 8.5, "height_in": 13.0, "price": 1.5},
+        {"name": "Long (8.5x13 in)", "width_in": 8.5, "height_in": 13.0, "price": 1.5},
+        {"name": "Legal (8.5x14 in)", "width_in": 8.5, "height_in": 14.0, "price": 1.75},
         {"name": "A4 (8.27x11.69 in)", "width_in": 8.27, "height_in": 11.69, "price": 1.25},
+        {"name": "3R (3.5x5 in)", "width_in": 3.5, "height_in": 5.0, "price": 0.25},
+        {"name": "4R (4x6 in)", "width_in": 4.0, "height_in": 6.0, "price": 0.5},
+        {"name": "5R (5x7 in)", "width_in": 5.0, "height_in": 7.0, "price": 0.75},
+        {"name": "6R (6x8 in)", "width_in": 6.0, "height_in": 8.0, "price": 1.0},
+        {"name": "8R (8x10 in)", "width_in": 8.0, "height_in": 10.0, "price": 1.5},
+        {"name": "10R (10x12 in)", "width_in": 10.0, "height_in": 12.0, "price": 2.0},
+    ],
+    "paper_types": [
+        {"name": "Plain paper", "price_factor": 1.0, "ink_factor": 1.0, "driver": "Plain Paper"},
+        {"name": "Matte photo paper", "price_factor": 4.0, "ink_factor": 1.2, "driver": "Matte Photo Paper"},
+        {"name": "Glossy photo paper", "price_factor": 6.0, "ink_factor": 1.3, "driver": "Glossy Photo Paper"},
+        {"name": "Semi-gloss / Luster", "price_factor": 7.0, "ink_factor": 1.3, "driver": "Semi-gloss / Luster Photo Paper"},
+        {"name": "Cardstock", "price_factor": 3.0, "ink_factor": 1.0, "driver": "Thick Paper / Cardstock"},
+        {"name": "Sticker paper", "price_factor": 5.0, "ink_factor": 1.1, "driver": "Glossy Photo Paper"},
     ],
     "ink_prices": {
         "C": 10.0,

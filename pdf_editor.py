@@ -79,6 +79,12 @@ class PdfEditor:
 
     # ---------------- reading ----------------
 
+    def page_size(self, index):
+        """(width, height) of a page in points."""
+        with fitz.open(self.path) as doc:
+            r = doc[index].rect
+            return r.width, r.height
+
     def page_count(self):
         with fitz.open(self.path) as doc:
             return len(doc)
@@ -249,6 +255,49 @@ class PdfEditor:
             self._remove(page, infos, image_idx)
             page.insert_image(new, xref=xref, keep_proportion=False, overlay=(how != "back"))
         return tuple(new)
+
+    @staticmethod
+    def _resize_page(doc, page, nw, nh, scale):
+        """New page size. scale=True fits the content to the new page (centred); False keeps it at the top-left."""
+        old = page.rect
+        mb, cb = page.mediabox, page.cropbox
+        bx0, by0 = cb.x0, mb.y1 - cb.y1  # lower-left corner of what is visible, in PDF coordinates
+        if scale:
+            k = min(nw / old.width, nh / old.height)
+            tx, ty = (nw - old.width * k) / 2, (nh - old.height * k) / 2
+        else:
+            k, tx, ty = 1.0, 0.0, nh - old.height
+        page.clean_contents()  # one content stream, so one matrix covers everything
+        xrefs = page.get_contents()
+        if len(xrefs) != 1:
+            raise EditError("This page's layout can't be resized.")
+        cm = f"q {k:.6f} 0 0 {k:.6f} {tx - bx0 * k:.4f} {ty - by0 * k:.4f} cm\n".encode()
+        doc.update_stream(xrefs[0], cm + doc.xref_stream(xrefs[0]) + b"\nQ\n")
+        doc.xref_set_key(page.xref, "MediaBox", f"[0 0 {nw:.4f} {nh:.4f}]")
+        for key in ("CropBox", "TrimBox", "BleedBox", "ArtBox"):
+            doc.xref_set_key(page.xref, key, "null")
+
+    def set_page_size(self, indices, paper=None, orientation=None, scale=True):
+        """Change paper and/or orientation of pages.
+        paper = (width, height) in points, any orientation; None keeps each page's own size.
+        orientation = 'portrait' | 'landscape' | None (keep). Returns how many pages changed."""
+        changed = 0
+        with self._edit() as doc:
+            for i in indices:
+                page = doc[i]
+                if page.rotation:
+                    raise EditError(f"Page {i + 1} is rotated, so its size can't be changed.")
+                cw, ch = page.rect.width, page.rect.height
+                short, long_ = sorted(paper) if paper else sorted((cw, ch))
+                landscape = (orientation == "landscape") if orientation else cw > ch
+                nw, nh = (long_, short) if landscape else (short, long_)
+                if abs(nw - cw) < 0.5 and abs(nh - ch) < 0.5:
+                    continue
+                self._resize_page(doc, page, nw, nh, scale)
+                changed += 1
+            if not changed:
+                raise EditError("The page already has that size.")
+        return changed
 
     def add_page(self, after_index):
         """A blank page after `after_index`, the same size as that page."""

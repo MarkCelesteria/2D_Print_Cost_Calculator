@@ -16,6 +16,7 @@ INK = (0.06, 0.11, 0.18)
 MUTED = (0.39, 0.45, 0.55)
 LOGO = [(0.0, 0.68, 0.94), (0.93, 0.0, 0.55), (1.0, 0.95, 0.0), (0.14, 0.12, 0.13)]
 MODES = {"color": "Color", "grayscale": "Grayscale", "bw": "Black & White"}
+DETAIL_MAX = 50
 
 
 def receipt_number(when):
@@ -81,6 +82,7 @@ def _draw(page, d):
         row("Customer TIN", d["customer_tin"])
     row("File", names[0] if len(names) == 1 else f"{len(names)} files")
     row("Paper", d["paper"])
+    row("Paper type", d.get("paper_type", "Plain paper"))
     row("Mode / Quality", f"{MODES.get(d['mode'], 'Color')} / {d['quality'].title()}")
     row("Pages", f"{format_page_ranges(pages)} ({len(pages)} of {d['page_count']})" if pages
         else f"All ({r['num_pages']})")
@@ -98,13 +100,23 @@ def _draw(page, d):
             page.insert_text((x - w, y), v, fontname=font, fontsize=size, color=color)
         y += size * 1.65
 
-    center("Color use per page (%)", 9, "hebo", gap=1.7)
-    cells(["Page", "C", "M", "Y", "K", "Price"], "hebo", MUTED)
-    for p in r["per_page"][:150]:
-        c = p["coverage"]
-        cells([str(p["page"])] + [f"{c[k] * 100:.1f}" for k in "CMYK"] + [f"{p['page_cost']:.2f}"])
-    if len(r["per_page"]) > 150:
-        center(f"+ {len(r['per_page']) - 150} more pages", 7, color=MUTED)
+    per = r["per_page"]
+    if len(per) <= DETAIL_MAX:
+        center("Color use per page (%)", 9, "hebo", gap=1.7)
+        cells(["Page", "C", "M", "Y", "K", "Price"], "hebo", MUTED)
+        for p in per:
+            c = p["coverage"]
+            cells([str(p["page"])] + [f"{c[k] * 100:.1f}" for k in "CMYK"] + [f"{p['page_cost']:.2f}"])
+    else:
+        center("Color use summary (average %)", 9, "hebo", gap=1.7)
+        cells(["Type", "C", "M", "Y", "K", "Price"], "hebo", MUTED)
+        for label, group in (("Color", [p for p in per if p["is_color"]]),
+                             ("B&W", [p for p in per if not p["is_color"]])):
+            if not group:
+                continue
+            avg = [sum(p["coverage"][k] for p in group) / len(group) * 100 for k in "CMYK"]
+            cells([f"{label} x{len(group)}"] + [f"{a:.1f}" for a in avg]
+                  + [f"{sum(p['page_cost'] for p in group):.2f}"])
     rule(dashed=False)
     if r["min_topup"] > 0:
         cells(["Min. mark-up", "", "", "", "", f"{r['min_topup']:.2f}"])
@@ -116,8 +128,7 @@ def _draw(page, d):
     y -= 4
     rule()
 
-    ink_label = "Ink" + (f" (x{r['ink_multiplier']:g})" if r["ink_multiplier"] != 1 else "")
-    row(ink_label, f"{r['ink_total']:.2f}", label_color=INK)
+    row("Ink", f"{r['ink_total']:.2f}", label_color=INK)
     row("Paper", f"{r['paper_total']:.2f}", label_color=INK)
     row("Subtotal", f"{r['subtotal']:.2f}", font="hebo", label_color=INK)
     y += 3

@@ -6,6 +6,7 @@ import fitz
 import numpy as np
 
 from analyzer import format_page_ranges
+from notes import notice
 
 PRINT_DPI = 300
 
@@ -66,25 +67,21 @@ def _paint_document(printer, doc, grayscale, threshold=False, only_pages=None):
 
 
 def print_pdf(pdf_path, parent=None, paper=None, color_mode="color", quality="standard",
-              job_name="Print Cost Calculator", pages=None):
+              job_name="Print Cost Calculator", pages=None, media=""):
     grayscale = color_mode != "color"
     notes = []
     if grayscale:
-        notes.append("Color mode: set it to Grayscale (or Black & white) in the print window so only black ink is used.")
+        notes.append(("warn", "Set color to Grayscale in the print window."))
+    if media and media.lower() != "plain paper":
+        notes.append(("warn", f'Set paper type to "{media}" in Preferences.'))
     if quality in ("draft", "high"):
-        notes.append(f"Quality: set the printer's quality to {quality.title()} in its Preferences so the printout matches the price.")
+        notes.append(("warn", f"Set quality to {quality.title()} in Preferences."))
     if pages:
-        notes.append(f"Pages: only {format_page_ranges(pages)} will print ({len(pages)} page(s)). "
-                     "The Pages box in the print window will still say All pages, because Windows "
-                     "can't show a custom list. Ignore it.")
+        notes.append(("info", f"Only pages {format_page_ranges(pages)} print ({len(pages)}). "
+                              "The window will still say All pages. Ignore it."))
     if notes:
-        box = QMessageBox(parent)
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setWindowTitle("Before you print")
-        box.setText("Before you print:")
-        box.setInformativeText("\n\n".join(notes))
-        box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-        if box.exec() != QMessageBox.StandardButton.Ok:
+        if notice(parent, "info", "Before you print", notes,
+                  QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Ok:
             return False
 
     doc = fitz.open(pdf_path)
@@ -99,16 +96,13 @@ def print_pdf(pdf_path, parent=None, paper=None, color_mode="color", quality="st
     if paper:
         size = QPageSize(QSizeF(paper["width_in"], paper["height_in"]), QPageSize.Unit.Inch, paper["name"])
         if not printer.setPageSize(size):
-            QMessageBox.information(
-                parent, "Paper size",
-                f"Your printer doesn't list \"{paper['name']}\". Pick the closest size in the print window.",
-            )
+            notice(parent, "warn", "Paper size", f"Printer doesn't list \"{paper['name']}\". Pick the closest size.")
 
     def on_paint(p):
         try:
             _paint_document(p, doc, grayscale, color_mode == "bw", pages)
         except Exception as e:
-            QMessageBox.critical(parent, "Print error", str(e))
+            notice(parent, "danger", "Print error", str(e))
 
     printer.setPageOrientation(_orientation(doc[0]))
     printer.setColorMode(QPrinter.ColorMode.GrayScale if grayscale else QPrinter.ColorMode.Color)

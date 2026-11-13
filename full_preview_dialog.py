@@ -16,6 +16,7 @@ from analyzer import (
 )
 from pdf_editor import PdfEditor, export_pdf
 from icons import make_icon
+from page_setup import PageSetupDialog
 from preview_widget import pil_to_qpixmap
 from style import PREVIEW_BG, MUTED, PRIMARY
 
@@ -545,7 +546,7 @@ class PageLabel(QLabel):
 
 class FullPreviewDialog(QDialog):
     def __init__(self, pdf_path, page_count, parent=None, mode="color", included=None, fit_paper=None,
-                 original_path=None, doc_name="document"):
+                 original_path=None, doc_name="document", paper_sizes=None):
         super().__init__(parent)
         self.mode = mode
         self.fit_paper = fit_paper
@@ -571,7 +572,9 @@ class FullPreviewDialog(QDialog):
         self._anim_target = 1.0
         self.editor = None      # created the first time Edit is switched on
         self.edit_mode = False
-        self.can_edit = fit_paper is None   # a page shown on another paper no longer lines up with the file
+        self.can_edit = True
+        self.paper_sizes = paper_sizes or []
+        self._fit_hold = None   # the paper the pages are normally shown on; set aside while editing
         self._page_pts = {}     # page index -> (width, height) in points
         self._crop_label = None  # the page whose picture is being trimmed
         self._paste_count = 0    # pastes since the last copy (each lands a little lower, so they don't pile up)
@@ -603,8 +606,7 @@ class FullPreviewDialog(QDialog):
         self.edit_btn.setObjectName("secondary")
         self.edit_btn.setCheckable(True)
         self.edit_btn.setEnabled(False)  # on once the pages are ready
-        self.edit_btn.setToolTip("Move, resize, delete and add images" if self.can_edit else
-                                 "Editing isn't available while the pages are shown on another paper size.")
+        self.edit_btn.setToolTip("Edit images, pages and paper")
         self.edit_btn.toggled.connect(self._set_edit)
         def tool(icon, slot, tip, color=None, width=40):
             b = QPushButton()
@@ -632,6 +634,7 @@ class FullPreviewDialog(QDialog):
         self.position_btn = tool("position", None, "Place the selected image on the page", width=54)
         self.position_btn.setMenu(self._fill_position_menu(QMenu(self.position_btn)))
 
+        self.setup_btn = tool("page-setup", lambda: self._page_setup(), "Paper type and orientation")
         self.pages_btn = tool("pages", None, "Add or delete pages", width=54)
         pages_menu = QMenu(self.pages_btn)
         self.act_add_after = pages_menu.addAction(make_icon("pages"), "Add blank page")
@@ -647,7 +650,7 @@ class FullPreviewDialog(QDialog):
         self.edit_tip = QLabel(self._edit_hint)
         self.edit_tip.setObjectName("muted")
         self.edit_tools = [self.undo_btn, self.redo_btn, self.reset_btn, self.add_btn, self.copy_btn, self.paste_btn,
-                           self.delete_btn, self.crop_btn, self.position_btn, self.pages_btn, self.edit_tip]
+                           self.delete_btn, self.crop_btn, self.position_btn, self.pages_btn, self.setup_btn, self.edit_tip]
         for w in self.edit_tools + [self.apply_crop_btn, self.cancel_crop_btn]:
             w.setVisible(False)
         export_btn = button("Export", self._export, "Save the document (with your edits) as a PDF")
@@ -686,7 +689,7 @@ class FullPreviewDialog(QDialog):
         edit_row.setSpacing(6)
         for group in ((self.undo_btn, self.redo_btn, self.reset_btn),
                       (self.add_btn, self.copy_btn, self.paste_btn, self.delete_btn),
-                      (self.crop_btn, self.position_btn, self.pages_btn)):
+                      (self.crop_btn, self.position_btn, self.pages_btn, self.setup_btn)):
             for w in group:
                 edit_row.addWidget(w)
             edit_row.addSpacing(12)
@@ -856,6 +859,7 @@ class FullPreviewDialog(QDialog):
                 return
         self._cancel_crop()
         self.edit_mode = on
+        self._show_true_pages(on)
         for w in self.edit_tools:
             w.setVisible(on)
         for lbl in self.page_labels:
@@ -864,6 +868,18 @@ class FullPreviewDialog(QDialog):
             if not on:
                 lbl.unsetCursor()
         self._update_edit_buttons()
+
+    def _show_true_pages(self, on):
+        """While editing, pages show as they really are. Afterwards they go back to how they print on the paper."""
+        if on and self.fit_paper:
+            self._fit_hold, self.fit_paper = self.fit_paper, None
+        elif not on and self._fit_hold:
+            self.fit_paper, self._fit_hold = self._fit_hold, None
+        else:
+            return
+        self._quiesce()
+        self._refresh_hint()
+        self._start_worker()
 
     def _items_for(self, index):
         if self.editor is None:
@@ -890,7 +906,7 @@ class FullPreviewDialog(QDialog):
         for w in (self.delete_btn, self.crop_btn, self.position_btn, self.copy_btn):
             w.setEnabled(has_sel and not cropping)
         self.paste_btn.setEnabled(self._can_paste() and not cropping)
-        for w in (self.reset_btn, self.add_btn, self.pages_btn):
+        for w in (self.reset_btn, self.add_btn, self.pages_btn, self.setup_btn):
             w.setEnabled(not cropping)
         self.apply_crop_btn.setVisible(cropping)
         self.cancel_crop_btn.setVisible(cropping)
@@ -1121,6 +1137,32 @@ class FullPreviewDialog(QDialog):
         page, idx = lbl.index, lbl.sel
         xref = lbl.items()[idx]["xref"]
         self._edit_page(page, lambda: self.editor.arrange(page, idx, xref, how))
+
+    # ---------------- page setup ----------------
+
+    def _page_setup(self):
+        page = self._current_page()
+        dlg = PageSetupDialog(self, page + 1, self.editor.page_size(page), self.paper_sizes, self.page_count)
+        if not dlg.exec() or not dlg.result_data:
+            return
+        r = dlg.result_data
+        targets = list(range(self.page_count)) if r["all"] else [page]
+        running = self._quiesce()
+        try:
+            self.editor.set_page_size(targets, r["paper"], r["orientation"], r["scale"])
+        except Exception as e:
+            QMessageBox.warning(self, "Couldn't change the page", str(e))
+            if running:
+                self._start_worker()
+            return
+        for i in targets:
+            self._page_pts.pop(i, None)
+            self.page_labels[i].invalidate()
+        if len(targets) == 1 and not running:
+            self._render_page_now(page)
+        else:
+            self._start_worker()  # every page changed (or others were still sharpening): render them again
+        self._update_edit_buttons()
 
     # ---------------- pages ----------------
 

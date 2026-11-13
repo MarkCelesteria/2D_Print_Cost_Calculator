@@ -11,6 +11,7 @@ import pricing
 import autostart
 import updater
 from style import PRIMARY, TEXT
+from notes import notice
 
 QUALITY_LABELS = [("draft", "Draft"), ("standard", "Standard"), ("high", "High")]
 
@@ -251,6 +252,40 @@ class PermitRulesDialog(QDialog):
             self._flash.start()
 
 
+class PaperTypeDialog(QDialog):
+    def __init__(self, parent=None, existing=None):
+        super().__init__(parent)
+        self.setWindowTitle("Paper type")
+        form = QFormLayout(self)
+        e = existing or {}
+        self.name_input = QLineEdit(e.get("name", ""))
+        self.price_input = QLineEdit(f"{e['price_factor']:g}" if e else "1")
+        self.ink_input = QLineEdit(f"{e['ink_factor']:g}" if e else "1")
+        self.driver_input = QLineEdit(e.get("driver", ""))
+        self.driver_input.setPlaceholderText("e.g. Glossy Photo Paper")
+        form.addRow("Name:", self.name_input)
+        form.addRow("Sheet price ×:", self.price_input)
+        form.addRow("Ink cost ×:", self.ink_input)
+        form.addRow("Printer setting:", self.driver_input)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+        self.result_data = None
+
+    def _on_accept(self):
+        try:
+            name = self.name_input.text().strip()
+            pf, inkf = float(self.price_input.text()), float(self.ink_input.text())
+            if not name or pf <= 0 or inkf <= 0:
+                raise ValueError
+            self.result_data = {"name": name, "price_factor": pf, "ink_factor": inkf,
+                                "driver": self.driver_input.text().strip()}
+            self.accept()
+        except ValueError:
+            QMessageBox.critical(self, "Invalid input", "Enter a name and numbers above 0.")
+
+
 class SettingsTab(QWidget):
     def __init__(self, settings, on_save, on_check_update=None, parent=None):
         super().__init__(parent)
@@ -356,6 +391,24 @@ class SettingsTab(QWidget):
         btn_row.addWidget(del_btn)
         btn_row.addStretch()
         paper_layout.addLayout(btn_row)
+
+        # ---- Paper types ----
+        type_card, type_layout = card()
+        root.addWidget(type_card)
+        th = QLabel("Paper Types")
+        th.setObjectName("cardHeader")
+        type_layout.addWidget(th)
+        tsub = QLabel("Sheet price = paper size price × Sheet price ×. Ink cost × is multiplied on top of the quality. "
+                      "Printer setting is shown before printing.")
+        tsub.setObjectName("muted")
+        tsub.setWordWrap(True)
+        type_layout.addWidget(tsub)
+        self.type_table = self._make_table(["Name", "Sheet price ×", "Ink cost ×", "Printer setting"])
+        type_layout.addWidget(self.type_table)
+        type_layout.addLayout(self._button_row(
+            lambda: self._add_item("paper_types", PaperTypeDialog),
+            lambda: self._edit_item("paper_types", PaperTypeDialog, self.type_table),
+            lambda: self._delete_item("paper_types", self.type_table)))
 
         # ---- Ink prices ----
         ink_card, ink_layout = card(QGridLayout)
@@ -553,7 +606,9 @@ class SettingsTab(QWidget):
 
     def _refresh_discount_tables(self):
         self.settings["bulk_discounts"].sort(key=lambda b: b["min"])
-        rows = [(self.discount_table, [[d["name"], f"{d['pct']:g}%"] for d in self.settings["discounts"]]),
+        rows = [(self.type_table, [[t["name"], f"{t['price_factor']:g}", f"{t['ink_factor']:g}", t["driver"]]
+                                   for t in self.settings["paper_types"]]),
+                (self.discount_table, [[d["name"], f"{d['pct']:g}%"] for d in self.settings["discounts"]]),
                 (self.bulk_table, [[str(b["min"]), str(b["max"]) if b["max"] else "and up", f"{b['pct']:g}%"]
                                    for b in self.settings["bulk_discounts"]])]
         for table, data in rows:
@@ -625,13 +680,9 @@ class SettingsTab(QWidget):
         self._refresh_paper_table()
 
     def _reset_to_default(self):
-        reply = QMessageBox.question(
-            self, "Reset to Default",
-            "This will reset all paper sizes, ink prices, and percentages "
-            "back to the built-in defaults. Continue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        if notice(self, "danger", "Reset to Default",
+                  "This resets paper sizes, paper types, ink prices and percentages to default.",
+                  QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
 
         defaults = pricing.load_default_settings()
@@ -644,11 +695,13 @@ class SettingsTab(QWidget):
         self.settings["color_threshold_pct"] = defaults["color_threshold_pct"]
         self.settings["quality_multipliers"] = defaults["quality_multipliers"]
         self.settings["high_black_mix"] = defaults["high_black_mix"]
+        self.settings["paper_types"] = defaults["paper_types"]
 
         pricing.save_settings(self.settings)
         self.on_save()
 
         self._refresh_paper_table()
+        self._refresh_discount_tables()
         for ch, field in self.ink_inputs.items():
             field.setText(str(self.settings["ink_prices"][ch]))
         for key, field in self.pct_inputs.items():

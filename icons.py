@@ -146,6 +146,14 @@ def _pages(p, c, white):
     _plus_badge(p, c, white, cx=48, cy=47)
 
 
+def _page_setup(p, c, white):
+    _stroke(p, c, 5)
+    p.drawRoundedRect(QRectF(8, 6, 28, 40), 5, 5)                # a portrait page
+    p.setPen(QPen(white, 3.5))
+    p.setBrush(c)
+    p.drawRoundedRect(QRectF(24, 30, 34, 25), 5, 5)              # and a landscape one in front of it
+
+
 def _copy(p, c, white):
     _stroke(p, c, 5)
     p.drawRoundedRect(QRectF(22, 6, 32, 38), 5, 5)               # back sheet
@@ -178,7 +186,7 @@ def _close(p, c, white):
 
 _DRAW = {"printer": _printer, "receipt": _receipt, "tag": _tag, "undo": _undo, "redo": _redo, "reset": _reset,
          "image-add": _image_add, "trash": _trash, "crop": _crop, "position": _position, "pages": _pages,
-         "copy": _copy, "paste": _paste, "check": _check, "close": _close}
+         "copy": _copy, "paste": _paste, "page-setup": _page_setup, "check": _check, "close": _close}
 
 
 def make_icon(name, color=PRIMARY_DARK):
