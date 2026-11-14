@@ -3,19 +3,12 @@ import time
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QSystemTrayIcon, QMenu, QMessageBox,
-    QWidget, QVBoxLayout, QHBoxLayout, QProgressDialog
+    QWidget, QVBoxLayout, QHBoxLayout, QProgressDialog, QSplashScreen
 )
-from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QAction, QDesktopServices
-from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QAction, QDesktopServices, QPen, QPainterPath, QFont
+from PyQt6.QtCore import Qt, QTimer, QUrl, QRectF
 
-import pricing
-import autostart
-import updater
-from analyzer import is_libreoffice_available, cleanup_temp_dirs, cleanup_old_temp_dirs
-from style import QSS, TEXT
-from calculate_tab import CalculateTab
-from settings_tab import SettingsTab
-
+from style import QSS, TEXT, MUTED, BORDER
 
 CMYK_COLORS = ["#00aeef", "#ec008c", "#fff200", "#231f20"]
 
@@ -34,6 +27,35 @@ def make_app_icon():
         painter.drawEllipse(x, y, 18, 18)
     painter.end()
     return QIcon(pix)
+
+
+def make_splash():
+    w, h, ratio = 420, 230, 2
+    pix = QPixmap(w * ratio, h * ratio)
+    pix.setDevicePixelRatio(ratio)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    card = QPainterPath()
+    card.addRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 14, 14)
+    p.fillPath(card, QColor("white"))
+    p.setClipPath(card)
+    seg = w / len(CMYK_COLORS)
+    for i, color in enumerate(CMYK_COLORS):
+        p.fillRect(QRectF(i * seg, 0, seg + 1, 6), QColor(color))
+    p.setClipping(False)
+    p.setPen(QPen(QColor(BORDER), 1))
+    p.drawPath(card)
+    p.drawPixmap(int((w - 64) / 2), 36, make_app_icon().pixmap(64, 64))
+    p.setPen(QColor(TEXT))
+    title = QFont("Segoe UI", 16)
+    title.setBold(True)
+    p.setFont(title)
+    p.drawText(QRectF(0, 110, w, 30), Qt.AlignmentFlag.AlignCenter, "Print Cost Calculator")
+    p.end()
+    splash = QSplashScreen(pix, Qt.WindowType.WindowStaysOnTopHint)
+    splash.setEnabled(False)
+    return splash
 
 
 class CmykBar(QWidget):
@@ -275,7 +297,6 @@ class MainWindow(QMainWindow):
         QApplication.instance().quit()
 
     def closeEvent(self, event):
-        # minimize to tray instead of quitting — click the tray icon to bring it back
         event.ignore()
         self.hide()
 
@@ -284,8 +305,6 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setApplicationName("Print Cost Calculator")
     app.setQuitOnLastWindowClosed(False)
-    app.aboutToQuit.connect(cleanup_temp_dirs)
-    cleanup_old_temp_dirs()
     app.setStyle("Fusion")
     app.setStyleSheet(QSS)
 
@@ -295,8 +314,36 @@ if __name__ == "__main__":
         args.remove("--minimized")
     initial_file = args[0] if args else None
 
+    splash = None
+    if not start_minimized:
+        splash = make_splash()
+        splash.show()
+    try:
+        import pyi_splash
+        pyi_splash.close()
+    except ImportError:
+        pass
+
+    def step(text):
+        if splash:
+            splash.showMessage(text, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, QColor(MUTED))
+        app.processEvents()
+
+    step("Loading libraries...")
+    import pricing
+    import autostart
+    import updater
+    from analyzer import is_libreoffice_available, cleanup_temp_dirs, cleanup_old_temp_dirs
+    step("Loading interface...")
+    from calculate_tab import CalculateTab
+    from settings_tab import SettingsTab
+
+    app.aboutToQuit.connect(cleanup_temp_dirs)
+    cleanup_old_temp_dirs()
+    step("Starting...")
     window = MainWindow(initial_file=initial_file, auto_calculate=bool(initial_file))
     if not start_minimized:
         window.show()
+        splash.finish(window)
 
     sys.exit(app.exec())

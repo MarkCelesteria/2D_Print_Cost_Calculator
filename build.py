@@ -17,6 +17,26 @@ def read_version():
     return match.group(1) if match else None
 
 
+def make_splash_image(path="splash.png"):
+    """The picture shown while the exe unpacks itself (before Python starts). Same look as the in-app splash."""
+    from PIL import Image, ImageDraw, ImageFont
+    w, h = 420, 230
+    img = Image.new("RGB", (w, h), "white")
+    draw = ImageDraw.Draw(img)
+    colors = ["#00aeef", "#ec008c", "#fff200", "#231f20"]
+    for i, c in enumerate(colors):
+        draw.rectangle([i * w // 4, 0, (i + 1) * w // 4, 5], fill=c)
+    draw.rectangle([0, 0, w - 1, h - 1], outline="#dde3ec")
+    try:
+        font = ImageFont.truetype("segoeuib.ttf", 26)
+    except OSError:
+        font = ImageFont.load_default()
+    draw.text((w / 2, h / 2 - 10), "Print Cost Calculator", fill="#0f1b2d", font=font, anchor="mm")
+    draw.text((w / 2, h - 28), "Starting...", fill="#64748b", anchor="mm")
+    img.save(path)
+    return path
+
+
 def run(cmd):
     print("\n> " + " ".join(cmd))
     if subprocess.call(cmd) != 0:
@@ -49,8 +69,9 @@ def main():
 
     for folder in ("build", "dist"):
         shutil.rmtree(folder, ignore_errors=True)  # start clean so an old build can't sneak in
+    splash = make_splash_image()
     run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
-         "--name", APP_NAME, "main.py"])
+         "--splash", splash, "--name", APP_NAME, "main.py"])
 
     exe = os.path.join("dist", EXE_NAME)
     if not os.path.exists(exe):
