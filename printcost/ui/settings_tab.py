@@ -4,13 +4,13 @@ from PyQt6.QtWidgets import (
     QHeaderView, QDialog, QDialogButtonBox, QFormLayout, QScrollArea, QCheckBox, QTextEdit
 )
 from PyQt6.QtCore import Qt, QRectF, QSize, QVariantAnimation
-from PyQt6.QtGui import QPainter, QColor
+from PyQt6.QtGui import QPainter, QColor, QPen
 import sys
 
 from printcost.core import pricing
 from printcost.core import autostart
 from printcost.core import updater
-from printcost.ui.style import PRIMARY, TEXT, CARD_BG, BORDER
+from printcost.ui.style import PRIMARY, TEXT, CARD_BG, BORDER, YELLOW, YELLOW_DARK, CmykBar
 from printcost.ui.notes import notice
 
 QUALITY_LABELS = [("draft", "Draft"), ("standard", "Standard"), ("high", "High")]
@@ -28,8 +28,10 @@ PCT_LABELS = [
 class ToggleSwitch(QCheckBox):
     TRACK_W, TRACK_H = 42, 22
 
-    def __init__(self, text="", parent=None):
+    def __init__(self, text="", parent=None, extra=False):
+        """extra=True: yellow when on, for options that cost extra (rush fee, double-sided...)."""
         super().__init__(text, parent)
+        self._on_color = YELLOW if extra else PRIMARY
         self._pos = 0.0
         self._anim = QVariantAnimation(self)
         self._anim.setDuration(120)
@@ -63,7 +65,7 @@ class ToggleSwitch(QCheckBox):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        off, on = QColor("#cbd5e1"), QColor(PRIMARY)
+        off, on = QColor("#cbd5e1"), QColor(self._on_color)
         t = self._pos
         track_color = QColor(*(int(off.getRgb()[i] + (on.getRgb()[i] - off.getRgb()[i]) * t) for i in range(3)))
 
@@ -81,6 +83,29 @@ class ToggleSwitch(QCheckBox):
             p.setPen(QColor(TEXT))
             p.drawText(QRectF(self.TRACK_W + 10, 0, self.width() - self.TRACK_W - 10, self.height()),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text())
+
+
+class DirtyButton(QPushButton):
+    """A button that shows a small yellow dot while there is something unsaved."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.dirty = False
+
+    def set_dirty(self, on):
+        self.dirty = on
+        self.setToolTip("You have unsaved changes" if on else "")
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.dirty:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(QPen(QColor("white"), 2))
+            p.setBrush(QColor(YELLOW))
+            p.drawEllipse(self.width() - 17, 5, 11, 11)
+            p.end()
 
 
 def card(layout_cls=QVBoxLayout):
@@ -557,7 +582,8 @@ class SettingsTab(QWidget):
         reset_btn.clicked.connect(self._reset_to_default)
         save_row.addWidget(reset_btn)
         save_row.addStretch()
-        save_btn = QPushButton("Save Settings")
+        save_btn = DirtyButton("Save Settings")
+        self.save_btn = save_btn
         save_btn.setObjectName("primary")
         save_btn.clicked.connect(self._save)
         save_row.addWidget(save_btn)
@@ -568,6 +594,32 @@ class SettingsTab(QWidget):
         save_row.setContentsMargins(16, 10, 16, 10)
         footer.setLayout(save_row)
         outer.addWidget(footer)
+        self._add_header_strips()
+        self._wire_dirty()
+
+    def _add_header_strips(self):
+        """A short CMYK strip under every section title, like the bar at the top of the window."""
+        for h in self.findChildren(QLabel):
+            if h.objectName() != "cardHeader":
+                continue
+            lay = h.parentWidget().layout() if h.parentWidget() else None
+            i = lay.indexOf(h) if lay is not None else -1
+            if i >= 0 and isinstance(lay, QVBoxLayout):
+                lay.insertWidget(i + 1, CmykBar(3, 44), 0, Qt.AlignmentFlag.AlignLeft)
+
+    def _wire_dirty(self):
+        for w in self.findChildren(QLineEdit):
+            w.textChanged.connect(self._mark_dirty)
+        for w in self.findChildren(QCheckBox):
+            if w is not getattr(self, "autostart_box", None):  # that one applies at once, it is not saved here
+                w.toggled.connect(self._mark_dirty)
+        self._set_dirty(False)
+
+    def _mark_dirty(self, *_):
+        self._set_dirty(True)
+
+    def _set_dirty(self, on):
+        self.save_btn.set_dirty(on)
 
     def _toggle_permit(self, on):
         if on and not PermitRulesDialog(self).exec():
@@ -635,6 +687,7 @@ class SettingsTab(QWidget):
         if dlg.exec() and dlg.result_data:
             self.settings[key].append(dlg.result_data)
             self._refresh_discount_tables()
+            self._set_dirty(True)
 
     def _edit_item(self, key, dlg_cls, table):
         row = table.currentRow()
@@ -644,6 +697,7 @@ class SettingsTab(QWidget):
         if dlg.exec() and dlg.result_data:
             self.settings[key][row] = dlg.result_data
             self._refresh_discount_tables()
+            self._set_dirty(True)
 
     def _delete_item(self, key, table):
         row = table.currentRow()
@@ -651,6 +705,7 @@ class SettingsTab(QWidget):
             return
         del self.settings[key][row]
         self._refresh_discount_tables()
+        self._set_dirty(True)
 
     def _refresh_paper_table(self):
         self.paper_table.setRowCount(len(self.settings["paper_sizes"]))
@@ -667,6 +722,7 @@ class SettingsTab(QWidget):
         if dlg.exec() and dlg.result_data:
             self.settings["paper_sizes"].append(dlg.result_data)
             self._refresh_paper_table()
+            self._set_dirty(True)
 
     def _edit_paper(self):
         row = self.paper_table.currentRow()
@@ -676,6 +732,7 @@ class SettingsTab(QWidget):
         if dlg.exec() and dlg.result_data:
             self.settings["paper_sizes"][row] = dlg.result_data
             self._refresh_paper_table()
+            self._set_dirty(True)
 
     def _delete_paper(self):
         row = self.paper_table.currentRow()
@@ -683,6 +740,7 @@ class SettingsTab(QWidget):
             return
         del self.settings["paper_sizes"][row]
         self._refresh_paper_table()
+        self._set_dirty(True)
 
     def _reset_to_default(self):
         if notice(self, "danger", "Reset to Default",
@@ -720,6 +778,7 @@ class SettingsTab(QWidget):
         self.tin_label.setVisible(False)
         self.tin_input.setVisible(False)
 
+        self._set_dirty(False)  # reset is saved straight away
         QMessageBox.information(self, "Reset", "Settings reset to default.")
         
     def _save(self):
@@ -758,5 +817,6 @@ class SettingsTab(QWidget):
         self.settings["has_permit"] = self.permit_box.isChecked()
         self.settings["tin"] = tin
         pricing.save_settings(self.settings)
+        self._set_dirty(False)
         self.on_save()
         QMessageBox.information(self, "Saved", "Settings saved.")

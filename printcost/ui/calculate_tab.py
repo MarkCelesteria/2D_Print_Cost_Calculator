@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QScrollArea, QInputDialog, QDoubleSpinBox, QApplication
 )
 from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QColor
 
 from printcost.core import pricing
 from printcost.ui.icons import make_icon
@@ -21,6 +22,9 @@ from printcost.ui.receipt import ReceiptDialog
 from printcost.core import poster
 from printcost.ui.poster_dialog import PosterDialog
 from printcost.ui.notes import label_style, notice
+from printcost.ui.style import MAGENTA_DARK
+
+INK_TINTS = ["#e0f4fb", "#fde4f2", "#fff7c9", "#e9edf2"]
 
 PCT_LABELS = [
     ("labor", "Labor %"),
@@ -156,6 +160,11 @@ class CalculateTab(QWidget):
         self.file_label.setObjectName("muted")
         self.file_label.setWordWrap(True)
         left_layout.addWidget(self.file_label)
+        self._badges = []
+        self.badge_row = QHBoxLayout()
+        self.badge_row.setSpacing(6)
+        self.badge_row.addStretch()
+        left_layout.addLayout(self.badge_row)
 
         self.poster_box = QFrame()
         self.poster_box.setObjectName("posterBox")
@@ -316,12 +325,30 @@ class CalculateTab(QWidget):
 
         self.preview.show_placeholder("No file selected")
         self.file_label.setText("No file selected")
+        self._set_badges()
         self.page_label.setText("No file selected")
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
         self.full_preview_btn.setEnabled(False)
         self.status_label.setText("")
         self._clear_results()
+
+    def _set_badges(self, *names):
+        """Small magenta tags next to the file name: Poster, Edited, Double-sided..."""
+        self._badges = list(names)
+        while self.badge_row.count():
+            w = self.badge_row.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        for n in self._badges:
+            b = QLabel(n)
+            b.setObjectName("badge")
+            self.badge_row.addWidget(b)
+        self.badge_row.addStretch()
+
+    def _add_badge(self, name):
+        if name not in self._badges:
+            self._set_badges(*self._badges, name)
 
     def _refresh_type_options(self, reset=False):
         current = "" if reset else self.type_combo.currentText()
@@ -449,7 +476,7 @@ class CalculateTab(QWidget):
             return
         self._load_id += 1
         load_id = self._load_id
-        self.file_label.setText(self.file_label.text().removesuffix(" · edited"))
+        self._set_badges()
         self._analysis_cache = {}
         self._loading = True
         self.preview.show_placeholder("Loading preview...")
@@ -656,8 +683,7 @@ class CalculateTab(QWidget):
         self._new_document = False
         self._detect_paper()
         self._clear_results()
-        if not self.file_label.text().endswith(" · edited"):
-            self.file_label.setText(self.file_label.text() + " · edited")
+        self._add_badge("Edited")
         self.status_label.setText("Document edited. Press Calculate to update the price.")
         self._show_current_page()
 
@@ -709,7 +735,8 @@ class CalculateTab(QWidget):
         self._new_document = False  # the poster's paper was chosen on purpose: don't auto-switch it
         self._on_document_loaded(pdf_path, count, first, False, load_id=self._load_id)
         self.pages_input.clear()
-        self.file_label.setText(os.path.basename(job["source"]) + " · poster")
+        self.file_label.setText(os.path.basename(job["source"]))
+        self._set_badges("Poster")
         self._update_poster_box()
         if tile:
             self.current_page = min(tile, count - 1)
@@ -1002,7 +1029,7 @@ class CalculateTab(QWidget):
             disc_btn = self._action_button(name or "Apply Discount", "tag", self._choose_discount)
             disc_btn.setToolTip("Choose a discount")
             actions.addWidget(disc_btn, 1)
-        actions.addWidget(self._action_button("Print", "printer", self._on_print_clicked), 1)
+        actions.addWidget(self._action_button("Print", "printer", self._on_print_clicked, cta=True), 1)
         receipt_data = self._receipt_data(result, paper)
         actions.addWidget(self._action_button(
             "View Receipt", "receipt", lambda: ReceiptDialog(receipt_data, self).exec()), 1)
@@ -1040,6 +1067,8 @@ class CalculateTab(QWidget):
             for col, val in enumerate(values):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if 1 <= col <= 4:
+                    item.setBackground(QColor(INK_TINTS[col - 1]))
                 if col == 6:
                     item.setToolTip(f"Color area {cov['color_frac']*100:.2f}% ({'Color' if p['is_color'] else 'B&W'})")
                 table.setItem(i, col, item)
@@ -1052,10 +1081,10 @@ class CalculateTab(QWidget):
         self.results_layout.addWidget(table_card)
         self.results_layout.addStretch()
 
-    def _action_button(self, text, icon, slot):
+    def _action_button(self, text, icon, slot, cta=False):
         btn = QPushButton(text)
-        btn.setObjectName("secondary")
-        btn.setIcon(make_icon(icon))
+        btn.setObjectName("cta" if cta else "secondary")
+        btn.setIcon(make_icon(icon, "white", MAGENTA_DARK) if cta else make_icon(icon))
         btn.setIconSize(QSize(18, 18))
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(lambda: slot())

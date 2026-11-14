@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QColor, QPen
 from PyQt6.QtCore import Qt, QTimer
 
-from printcost.ui.style import BORDER, MUTED, PRIMARY, PREVIEW_BG
+from printcost.ui.style import BORDER, MUTED, MAGENTA, PREVIEW_BG
 
 PREVIEW_SIZE = (260, 340)
 SPINNER_SIZE = 64
@@ -51,7 +51,7 @@ class Spinner(QWidget):
         p.translate(SPINNER_SIZE / 2, SPINNER_SIZE / 2)
         p.rotate(self._step * 30)
         for i in range(12):  # 12 spokes, the "tail" fades out
-            color = QColor(PRIMARY)
+            color = QColor(MAGENTA)
             color.setAlpha(40 + int(215 * i / 11))
             p.setBrush(color)
             p.drawRoundedRect(-3, -25, 6, 11, 3, 3)

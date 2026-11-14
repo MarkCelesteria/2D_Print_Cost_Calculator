@@ -197,8 +197,9 @@ _DRAW = {"printer": _printer, "receipt": _receipt, "tag": _tag, "undo": _undo, "
          "poster": _poster}
 
 
-def make_icon(name, color=PRIMARY_DARK):
-    key = (name, color)
+def make_icon(name, color=PRIMARY_DARK, detail="white"):
+    """`detail` is the color of the cut-outs (paper, holes); use the button's color on a filled button."""
+    key = (name, color, detail)
     if key not in _cache:
         pix = QPixmap(96, 96)
         pix.fill(Qt.GlobalColor.transparent)
@@ -206,7 +207,7 @@ def make_icon(name, color=PRIMARY_DARK):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.scale(1.5, 1.5)
         p.setPen(Qt.PenStyle.NoPen)
-        _DRAW[name](p, QColor(color), QColor("white"))
+        _DRAW[name](p, QColor(color), QColor(detail))
         p.end()
         _cache[key] = QIcon(pix)
     return _cache[key]

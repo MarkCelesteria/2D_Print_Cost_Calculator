@@ -1,3 +1,6 @@
+from PyQt6.QtGui import QColor, QPainter
+from PyQt6.QtWidgets import QWidget
+
 BG = "#f3f6fa"
 CARD_BG = "#ffffff"
 PRIMARY = "#0891b2"        # cyan
@@ -6,10 +9,33 @@ SOFT = "#e6f6fa"           # light cyan tint (hover / selection)
 TEXT = "#0f1b2d"           # ink navy
 MUTED = "#64748b"
 BORDER = "#dde3ec"
-ACCENT_LINE = "#e91e8c"    # magenta scanning bar
+MAGENTA = "#e91e8c"        # magenta: guides, outlines, live things
+ACCENT_LINE = MAGENTA      # old name, same color
 PREVIEW_BG = "#e8edf4"
 YELLOW = "#f5c400"         # yellow accent (hover underline on tabs)
-MAGENTA_DARK = "#c4137a"   # magenta for the price total
+MAGENTA_DARK = "#c4137a"   # magenta for the price total and final buttons (white text passes on it)
+MAGENTA_DEEP = "#a30f66"   # magenta hover
+YELLOW_SOFT = "#fff3b8"    # soft yellow: warning boxes, selected rows
+YELLOW_DARK = "#c9a000"    # yellow outline / dot ring
+NAVY = TEXT                  # all text
+DISABLED_TEXT = "#7a8799"  # disabled text (darker than before, so it stays readable)
+CMYK_COLORS = ["#00aeef", "#ec008c", "#fff200", "#231f20"]
+
+
+class CmykBar(QWidget):
+    """The four-color strip. Full width under the window top; short (`width`) under section titles."""
+
+    def __init__(self, height=4, width=None, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(height)
+        if width:
+            self.setFixedWidth(width)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        seg = self.width() / len(CMYK_COLORS)
+        for i, color in enumerate(CMYK_COLORS):
+            painter.fillRect(int(i * seg), 0, int(seg) + 1, self.height(), QColor(color))
 
 QSS = f"""
 QWidget {{
@@ -19,7 +45,7 @@ QWidget {{
     font-size: 13px;
 }}
 QLabel, QCheckBox {{ background: transparent; }}
-QLabel:disabled, QCheckBox:disabled {{ color: #9aa5b4; }}
+QLabel:disabled, QCheckBox:disabled {{ color: {DISABLED_TEXT}; }}
 QCheckBox {{ spacing: 8px; }}
 QCheckBox::indicator {{
     width: 16px; height: 16px;
@@ -28,6 +54,9 @@ QCheckBox::indicator {{
 QCheckBox::indicator:hover {{ border-color: {PRIMARY}; }}
 QCheckBox::indicator:checked {{ background: {PRIMARY}; border-color: {PRIMARY}; }}
 QCheckBox::indicator:disabled {{ background: {BG}; border-color: {BORDER}; }}
+/* options that cost extra (rush fee, double-sided...): setProperty("extra", True) */
+QCheckBox[extra="true"]::indicator:checked {{ background: {YELLOW}; border-color: {YELLOW_DARK}; }}
+QCheckBox[extra="true"]::indicator:hover {{ border-color: {YELLOW_DARK}; }}
 QToolTip {{
     background: {TEXT}; color: white; border: none; padding: 4px 8px;
 }}
@@ -56,6 +85,14 @@ QLabel#total {{
     font-size: 20px;
     font-weight: 800;
     color: {MAGENTA_DARK};
+}}
+QLabel#badge {{
+    background: {MAGENTA_DARK};
+    color: white;
+    border-radius: 8px;
+    padding: 1px 8px;
+    font-size: 10px;
+    font-weight: 700;
 }}
 
 /* ---------- tabs ---------- */
@@ -97,8 +134,21 @@ QPushButton#primary {{
 }}
 QPushButton#primary:hover {{ background: {PRIMARY_DARK}; }}
 QPushButton#primary:pressed {{ background: #155e75; }}
-QPushButton:disabled {{ background: #eef1f5; color: #9aa5b4; border: 1px solid {BORDER}; }}
-QPushButton#primary:disabled {{ background: #cbd5e1; color: #f8fafc; border: none; }}
+QPushButton:disabled {{ background: #eef1f5; color: {DISABLED_TEXT}; border: 1px solid {BORDER}; }}
+QPushButton#primary:disabled {{ background: #dbe2ea; color: #5f6b7d; border: none; }}
+
+/* the final "do it" buttons (Print, Create poster) */
+QPushButton#cta {{
+    background: {MAGENTA_DARK};
+    color: white;
+    border: 1px solid {MAGENTA_DARK};
+    border-radius: 8px;
+    padding: 7px 14px;
+    font-weight: 700;
+}}
+QPushButton#cta:hover {{ background: {MAGENTA_DEEP}; border-color: {MAGENTA_DEEP}; }}
+QPushButton#cta:pressed {{ background: #8a0d56; }}
+QPushButton#cta:disabled {{ background: #dbe2ea; color: #5f6b7d; border: 1px solid #dbe2ea; }}
 
 QPushButton#secondary {{
     background: {CARD_BG};
@@ -111,7 +161,7 @@ QPushButton#secondary {{
 QPushButton#secondary:hover {{ background: {SOFT}; }}
 QPushButton#secondary:pressed {{ background: #cdeef5; }}
 QPushButton#secondary:checked {{ background: {PRIMARY}; color: white; }}
-QPushButton#secondary:disabled {{ color: #9aa5b4; border: 1px solid {BORDER}; background: #eef1f5; }}
+QPushButton#secondary:disabled {{ color: {DISABLED_TEXT}; border: 1px solid {BORDER}; background: #eef1f5; }}
 
 /* ---------- inputs ---------- */
 QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox {{
@@ -126,7 +176,7 @@ QLineEdit:hover, QComboBox:hover, QDoubleSpinBox:hover, QSpinBox:hover {{ border
 QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus, QSpinBox:focus {{ border: 1px solid {PRIMARY}; }}
 QLineEdit:disabled, QComboBox:disabled, QDoubleSpinBox:disabled, QSpinBox:disabled {{
     background: #eef1f5;
-    color: #9aa5b4;
+    color: {DISABLED_TEXT};
     border: 1px solid {BORDER};
 }}
 QDoubleSpinBox::up-button, QDoubleSpinBox::down-button, QSpinBox::up-button, QSpinBox::down-button {{ width: 18px; border: none; background: transparent; }}
@@ -146,9 +196,11 @@ QTableWidget {{
     border: 1px solid {BORDER};
     border-radius: 8px;
     gridline-color: #edf1f6;
-    selection-background-color: {SOFT};
+    selection-background-color: {YELLOW_SOFT};
     selection-color: {TEXT};
 }}
+QTableWidget::item:hover {{ background: {SOFT}; }}
+QTableWidget::item:selected, QTableWidget::item:selected:hover {{ background: {YELLOW_SOFT}; color: {TEXT}; }}
 QHeaderView::section {{
     background: #f1f5f9;
     color: {MUTED};

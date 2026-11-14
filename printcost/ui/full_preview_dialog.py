@@ -17,7 +17,7 @@ from printcost.core.analyzer import (
 from printcost.core.pdf_editor import PdfEditor, export_pdf
 from printcost.ui.icons import make_icon
 from printcost.ui.preview_widget import pil_to_qpixmap
-from printcost.ui.style import PREVIEW_BG, MUTED, PRIMARY, BORDER, ACCENT_LINE
+from printcost.ui.style import PREVIEW_BG, MUTED, PRIMARY, BORDER, ACCENT_LINE, MAGENTA
 
 STRIP_PAGE_SIZE = (700, 900)   # page size at 100% zoom
 ZOOM_MIN = 0.5
@@ -631,10 +631,10 @@ class PageLabel(QLabel):
                         p.setOpacity(0.85)
                         p.drawPixmap(r, pm, src)
                         p.setOpacity(1.0)
-                p.setPen(QPen(accent, 2))
+                p.setPen(QPen(QColor(MAGENTA), 2))
                 p.drawRect(r)
                 p.setBrush(QColor("white"))
-                p.setPen(QPen(accent, 1.5))
+                p.setPen(QPen(QColor(MAGENTA), 1.5))
                 for pt in self._handles(r).values():
                     p.drawRect(QRectF(pt.x() - 4, pt.y() - 4, 8, 8))
             if self._drag:

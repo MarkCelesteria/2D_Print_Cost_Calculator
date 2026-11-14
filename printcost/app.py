@@ -8,9 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QAction, QDesktopServices, QPen, QPainterPath, QFont
 from PyQt6.QtCore import Qt, QTimer, QUrl, QRectF
 
-from printcost.ui.style import QSS, TEXT, MUTED, BORDER
-
-CMYK_COLORS = ["#00aeef", "#ec008c", "#fff200", "#231f20"]
+from printcost.ui.style import QSS, TEXT, MUTED, BORDER, CMYK_COLORS, CmykBar
 
 
 def make_app_icon():
@@ -56,18 +54,6 @@ def make_splash():
     splash = QSplashScreen(pix, Qt.WindowType.WindowStaysOnTopHint)
     splash.setEnabled(False)
     return splash
-
-
-class CmykBar(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(4)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        seg = self.width() / len(CMYK_COLORS)
-        for i, color in enumerate(CMYK_COLORS):
-            painter.fillRect(int(i * seg), 0, int(seg) + 1, self.height(), QColor(color))
 
 
 class MainWindow(QMainWindow):

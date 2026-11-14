@@ -12,7 +12,7 @@ from printcost.core import pricing
 from printcost.core.analyzer import IMAGE_EXTS
 from printcost.ui.notes import label_style
 from printcost.ui.preview_widget import pil_to_qpixmap
-from printcost.ui.style import BORDER, PREVIEW_BG, ACCENT_LINE, PRIMARY
+from printcost.ui.style import BORDER, PREVIEW_BG, ACCENT_LINE, PRIMARY, MAGENTA
 
 PRESETS = [("2×2", (2, 2)), ("3×2", (3, 2)), ("3×3", (3, 3)), ("4×3", (4, 3)), ("Custom", None)]
 PRICING_MODES = [
@@ -69,7 +69,8 @@ class PosterPreview(QWidget):
             tile = QRectF(ox + x0 * s, oy + y0 * s, (x1 - x0) * s, (y1 - y0) * s)
             if idx == self.selected:
                 p.fillRect(tile, QColor(8, 145, 178, 70))
-            pen = QPen(QColor(ACCENT_LINE), 2 if idx == self.selected else 1)
+            selected = idx == self.selected  # selected tile: solid magenta outline; the rest: quiet navy dashes
+            pen = QPen(QColor(MAGENTA) if selected else QColor(15, 27, 45, 140), 3 if selected else 1)
             pen.setStyle(Qt.PenStyle.DashLine if idx != self.selected else Qt.PenStyle.SolidLine)
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -439,7 +440,7 @@ class PosterDialog(QDialog):
         form.setRowStretch(row, 1)
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         self.create_btn = QPushButton("Create poster")
-        self.create_btn.setObjectName("primary")
+        self.create_btn.setObjectName("cta")
         self.buttons.addButton(self.create_btn, QDialogButtonBox.ButtonRole.AcceptRole)
         self.buttons.accepted.connect(self._accept)
         self.buttons.rejected.connect(self.reject)

@@ -11,9 +11,9 @@ from PyQt6.QtWidgets import (
 
 from printcost.core.analyzer import format_page_ranges
 
-W, M = 288, 20  # page width (4 in) and side margin, in points
-INK = (0.06, 0.11, 0.18)
-MUTED = (0.39, 0.45, 0.55)
+W, M = 288, 20
+INK = (0, 0, 0)
+MUTED = (0, 0, 0)
 LOGO = [(0.0, 0.68, 0.94), (0.93, 0.0, 0.55), (1.0, 0.95, 0.0), (0.14, 0.12, 0.13)]
 MODES = {"color": "Color", "grayscale": "Grayscale", "bw": "Black & White"}
 DETAIL_MAX = 50
