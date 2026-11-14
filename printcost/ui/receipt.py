@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QLineEdit,
 )
 
-from analyzer import format_page_ranges
+from printcost.core.analyzer import format_page_ranges
 
 W, M = 288, 20  # page width (4 in) and side margin, in points
 INK = (0.06, 0.11, 0.18)

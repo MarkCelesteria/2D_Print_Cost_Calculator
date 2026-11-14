@@ -7,12 +7,12 @@ from PyQt6.QtWidgets import (
     QCheckBox, QPushButton, QFileDialog, QMessageBox, QWidget, QDialogButtonBox, QApplication, QSizePolicy,
 )
 
-import poster
-import pricing
-from analyzer import IMAGE_EXTS
-from notes import label_style
-from preview_widget import pil_to_qpixmap
-from style import BORDER, PREVIEW_BG, ACCENT_LINE, PRIMARY
+from printcost.core import poster
+from printcost.core import pricing
+from printcost.core.analyzer import IMAGE_EXTS
+from printcost.ui.notes import label_style
+from printcost.ui.preview_widget import pil_to_qpixmap
+from printcost.ui.style import BORDER, PREVIEW_BG, ACCENT_LINE, PRIMARY
 
 PRESETS = [("2×2", (2, 2)), ("3×2", (3, 2)), ("3×3", (3, 3)), ("4×3", (4, 3)), ("Custom", None)]
 PRICING_MODES = [

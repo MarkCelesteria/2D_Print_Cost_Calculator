@@ -6,3 +6,9 @@ __pycache__/
 *.pyc
 
 settings.json
+splash.png
+_backup_before_restructure.zip
+.venv/
+venv/
+
+*.zip

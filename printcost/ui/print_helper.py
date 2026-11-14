@@ -5,8 +5,8 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 import fitz
 import numpy as np
 
-from analyzer import format_page_ranges
-from notes import notice
+from printcost.core.analyzer import format_page_ranges
+from printcost.ui.notes import notice
 
 PRINT_DPI = 300
 

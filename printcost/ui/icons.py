@@ -3,7 +3,7 @@ import math
 from PyQt6.QtCore import Qt, QRectF, QPointF
 from PyQt6.QtGui import QPixmap, QPainter, QColor, QIcon, QPen, QPolygonF
 
-from style import PRIMARY_DARK
+from printcost.ui.style import PRIMARY_DARK
 
 _cache = {}
 ROUND = Qt.PenCapStyle.RoundCap

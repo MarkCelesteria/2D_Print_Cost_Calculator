@@ -7,11 +7,11 @@ from PyQt6.QtCore import Qt, QRectF, QSize, QVariantAnimation
 from PyQt6.QtGui import QPainter, QColor
 import sys
 
-import pricing
-import autostart
-import updater
-from style import PRIMARY, TEXT, CARD_BG, BORDER
-from notes import notice
+from printcost.core import pricing
+from printcost.core import autostart
+from printcost.core import updater
+from printcost.ui.style import PRIMARY, TEXT, CARD_BG, BORDER
+from printcost.ui.notes import notice
 
 QUALITY_LABELS = [("draft", "Draft"), ("standard", "Standard"), ("high", "High")]
 

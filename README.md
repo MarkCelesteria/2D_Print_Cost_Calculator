@@ -31,16 +31,29 @@ out after the fact.
 
 ```
 print_cost_calculator/
-  main.py            <- app entry point, window shell, system tray
-  calculate_tab.py    <- file picker, preview, options, results table
-  settings_tab.py      <- paper sizes, ink prices, default percentages
-  preview_widget.py     <- first-page thumbnail + scanning animation
-  worker.py               <- background thread that runs the analysis
-  style.py                  <- shared QSS stylesheet / color palette
-  analyzer.py                 <- CMYK conversion, PDF/DOCX rendering, cost math
-  pricing.py                    <- settings persistence (settings.json)
-  poster.py                       <- poster slicing, preview image, poster pricing
-  poster_dialog.py                  <- the Poster window (grid, fit, margins, preview)
+  main.py                  <- start here (python main.py)
+  requirements.txt
+  printcost/
+    app.py                 <- window shell, system tray, splash
+    core/                  <- logic and services
+      analyzer.py          <- CMYK conversion, PDF/DOCX rendering, cost math
+      pricing.py           <- settings persistence (settings.json)
+      poster.py            <- poster slicing, preview image, poster pricing
+      pdf_editor.py        <- editing pages and images in a PDF
+      updater.py           <- checks GitHub and updates the exe
+      autostart.py         <- start with Windows
+      worker.py            <- background threads for loading and analysis
+    ui/                    <- everything the user sees
+      calculate_tab.py     <- file picker, preview, options, results
+      settings_tab.py      <- paper sizes, ink prices, percentages
+      full_preview_dialog.py <- full preview and the editor
+      poster_dialog.py     <- the Poster window
+      preview_widget.py    <- first-page thumbnail and spinner
+      print_helper.py      <- printing
+      receipt.py           <- receipt image / PDF
+      notes.py, icons.py, style.py
+  tools/                   <- build.py, build.bat
+  docs/                    <- BUILD_EXE.md, add_context_menu.reg
 ```
 
 ## Setup

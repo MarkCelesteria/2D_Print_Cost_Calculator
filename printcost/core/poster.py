@@ -9,7 +9,7 @@ try:
 except ImportError:
     fitz = None
 
-from analyzer import AnalysisError, IMAGE_DPI, is_image, load_image_rgb, make_temp_dir
+from printcost.core.analyzer import AnalysisError, IMAGE_DPI, is_image, load_image_rgb, make_temp_dir
 
 MAX_GRID = 50
 MARK_LEN = 14.4          # 0.2 in, length of crop / alignment marks

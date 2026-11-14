@@ -10,14 +10,14 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import QPainter, QColor, QFont, QPixmap, QPen, QPainterPath, QDrag, QCursor, QImage
 
-from analyzer import (
+from printcost.core.analyzer import (
     render_pdf_page, apply_preview_mode, format_page_ranges, get_pdf_page_inches, fit_page_to_paper,
     is_image, IMAGE_EXTS
 )
-from pdf_editor import PdfEditor, export_pdf
-from icons import make_icon
-from preview_widget import pil_to_qpixmap
-from style import PREVIEW_BG, MUTED, PRIMARY, BORDER, ACCENT_LINE
+from printcost.core.pdf_editor import PdfEditor, export_pdf
+from printcost.ui.icons import make_icon
+from printcost.ui.preview_widget import pil_to_qpixmap
+from printcost.ui.style import PREVIEW_BG, MUTED, PRIMARY, BORDER, ACCENT_LINE
 
 STRIP_PAGE_SIZE = (700, 900)   # page size at 100% zoom
 ZOOM_MIN = 0.5

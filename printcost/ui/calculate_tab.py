@@ -7,20 +7,20 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSize
 
-import pricing
-from icons import make_icon
-from preview_widget import PreviewWidget
-from worker import AnalyzeWorker, LoadDocumentWorker
-from analyzer import (render_pdf_page, apply_preview_mode, compute_cost, cleanup_temp_dirs,
+from printcost.core import pricing
+from printcost.ui.icons import make_icon
+from printcost.ui.preview_widget import PreviewWidget
+from printcost.core.worker import AnalyzeWorker, LoadDocumentWorker
+from printcost.core.analyzer import (render_pdf_page, apply_preview_mode, compute_cost, cleanup_temp_dirs,
                       parse_page_ranges, format_page_ranges, get_document_page_size, closest_paper,
                       get_pdf_page_inches, fit_page_to_paper, SUPPORTED_EXTS, IMAGE_EXTS, is_image,
                       get_pdf_page_count)
-from full_preview_dialog import FullPreviewDialog
-from print_helper import print_pdf
-from receipt import ReceiptDialog
-import poster
-from poster_dialog import PosterDialog
-from notes import label_style, notice
+from printcost.ui.full_preview_dialog import FullPreviewDialog
+from printcost.ui.print_helper import print_pdf
+from printcost.ui.receipt import ReceiptDialog
+from printcost.core import poster
+from printcost.ui.poster_dialog import PosterDialog
+from printcost.ui.notes import label_style, notice
 
 PCT_LABELS = [
     ("labor", "Labor %"),

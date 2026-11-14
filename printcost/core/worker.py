@@ -1,6 +1,6 @@
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from analyzer import (
+from printcost.core.analyzer import (
     resolve_to_pdf, get_pdf_page_count, render_pdf_page, build_batch_pdf, is_image,
     analyze_pdf, analyze_docx_fallback, compute_cost, AnalysisError,
 )

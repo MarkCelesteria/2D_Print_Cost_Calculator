@@ -9,7 +9,8 @@ def _app_data_dir():
         path = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "PrintCostCalculator")
         os.makedirs(path, exist_ok=True)
         return path
-    return os.path.dirname(os.path.abspath(__file__))
+    here = os.path.dirname(os.path.abspath(__file__))   # printcost/core -> the project folder
+    return os.path.dirname(os.path.dirname(here))        # settings.json stays next to main.py
 
 
 SETTINGS_PATH = os.path.join(_app_data_dir(), "settings.json")

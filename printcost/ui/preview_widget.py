@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QColor, QPen
 from PyQt6.QtCore import Qt, QTimer
 
-from style import BORDER, MUTED, PRIMARY, PREVIEW_BG
+from printcost.ui.style import BORDER, MUTED, PRIMARY, PREVIEW_BG
 
 PREVIEW_SIZE = (260, 340)
 SPINNER_SIZE = 64

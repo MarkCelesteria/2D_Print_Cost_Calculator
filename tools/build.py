@@ -1,4 +1,4 @@
-"""Builds PrintCostCalculator.exe.  Double-click build.bat (or run: python build.py)."""
+"""Builds PrintCostCalculator.exe.  Double-click tools\\build.bat (or run: python tools\\build.py)."""
 import hashlib
 import os
 import re
@@ -6,13 +6,13 @@ import shutil
 import subprocess
 import sys
 
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the project folder
 APP_NAME = "PrintCostCalculator"
 EXE_NAME = APP_NAME + (".exe" if os.name == "nt" else "")
 
 
 def read_version():
-    with open("updater.py", encoding="utf-8") as f:
+    with open(os.path.join("printcost", "core", "updater.py"), encoding="utf-8") as f:
         match = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', f.read())
     return match.group(1) if match else None
 
