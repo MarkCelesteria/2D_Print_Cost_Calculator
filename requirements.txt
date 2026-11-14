@@ -1,4 +1,6 @@
 PyQt6
 pymupdf
 pillow
+numpy
 python-docx
+pillow-heif

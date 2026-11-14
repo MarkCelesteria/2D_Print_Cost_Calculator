@@ -8,6 +8,8 @@ MUTED = "#64748b"
 BORDER = "#dde3ec"
 ACCENT_LINE = "#e91e8c"    # magenta scanning bar
 PREVIEW_BG = "#e8edf4"
+YELLOW = "#f5c400"         # yellow accent (hover underline on tabs)
+MAGENTA_DARK = "#c4137a"   # magenta for the price total
 
 QSS = f"""
 QWidget {{
@@ -53,7 +55,7 @@ QLabel#muted {{
 QLabel#total {{
     font-size: 20px;
     font-weight: 800;
-    color: {PRIMARY_DARK};
+    color: {MAGENTA_DARK};
 }}
 
 /* ---------- tabs ---------- */
@@ -69,7 +71,7 @@ QTabBar::tab {{
     color: {MUTED};
     border-bottom: 3px solid transparent;
 }}
-QTabBar::tab:hover {{ color: {TEXT}; }}
+QTabBar::tab:hover {{ color: {TEXT}; border-bottom: 3px solid {YELLOW}; }}
 QTabBar::tab:selected {{
     color: {PRIMARY_DARK};
     border-bottom: 3px solid {PRIMARY};
@@ -159,7 +161,10 @@ QHeaderView::section {{
 
 /* ---------- progress ---------- */
 QProgressBar {{ background: {BORDER}; border: none; border-radius: 4px; max-height: 8px; }}
-QProgressBar::chunk {{ background: {PRIMARY}; border-radius: 4px; }}
+QProgressBar::chunk {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00aeef, stop:0.55 #ec008c, stop:1 #f5c400);
+    border-radius: 4px;
+}}
 
 /* ---------- scrolling ---------- */
 QScrollArea {{ border: none; background: transparent; }}
