@@ -209,17 +209,7 @@ class CalculateTab(QWidget):
         self.pages_input = QLineEdit()
         self.pages_input.setPlaceholderText("All pages (or e.g. 1-6, 8-9, 11, 12)")
         self.pages_input.textChanged.connect(self._on_pages_changed)
-        opts_layout.addWidget(self.pages_input, 4, 1, 1, 3)
-        opts_layout.addWidget(QLabel("Margin"), 4, 4)
-        self.margin_spin = QDoubleSpinBox()  # print margin; always starts borderless
-        self.margin_spin.setRange(0.0, 50.0)
-        self.margin_spin.setDecimals(1)
-        self.margin_spin.setSingleStep(1.0)
-        self.margin_spin.setSuffix(" mm")
-        self.margin_spin.setSpecialValueText("Borderless")
-        self.margin_spin.setValue(0.0)
-        self.margin_spin.setToolTip("Space kept blank around every printed page. Borderless = none.")
-        opts_layout.addWidget(self.margin_spin, 4, 5)
+        opts_layout.addWidget(self.pages_input, 4, 1, 1, 5)
 
         for i, (key, label) in enumerate(PCT_LABELS):
             r, c = 5 + i // 3, (i % 3) * 2
@@ -932,5 +922,4 @@ class CalculateTab(QWidget):
             job_name=job_name,
             pages=getattr(self, "print_pages", None),
             media=getattr(self, "print_media", ""),
-            margin_mm=self.margin_spin.value(),
         )

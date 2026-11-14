@@ -102,7 +102,7 @@ QPushButton#secondary:checked {{ background: {PRIMARY}; color: white; }}
 QPushButton#secondary:disabled {{ color: #9fb0bf; border-color: {BORDER}; background: {CARD_BG}; }}
 
 /* ---------- inputs ---------- */
-QLineEdit, QComboBox {{
+QLineEdit, QComboBox, QDoubleSpinBox {{
     background: white;
     border: 1px solid {BORDER};
     border-radius: 7px;
@@ -110,8 +110,9 @@ QLineEdit, QComboBox {{
     selection-background-color: {PRIMARY};
     selection-color: white;
 }}
-QLineEdit:hover, QComboBox:hover {{ border-color: #b8c4d3; }}
-QLineEdit:focus, QComboBox:focus {{ border: 1px solid {PRIMARY}; }}
+QLineEdit:hover, QComboBox:hover, QDoubleSpinBox:hover {{ border-color: #b8c4d3; }}
+QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {PRIMARY}; }}
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 18px; border: none; background: transparent; }}
 QComboBox::drop-down {{ border: none; width: 24px; }}
 QComboBox QAbstractItemView {{
     background: white;

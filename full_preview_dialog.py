@@ -2,7 +2,7 @@ import json
 
 from PyQt6.QtWidgets import (
     QDialog, QScrollArea, QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
-    QStackedWidget, QProgressBar, QFileDialog, QMessageBox, QMenu, QApplication
+    QStackedWidget, QProgressBar, QFileDialog, QMessageBox, QMenu, QApplication, QGridLayout
 )
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QTimer, QEvent, QRectF, QPointF, QPoint, QSize, QEasingCurve, QVariantAnimation,
@@ -17,7 +17,7 @@ from analyzer import (
 from pdf_editor import PdfEditor, export_pdf
 from icons import make_icon
 from preview_widget import pil_to_qpixmap
-from style import PREVIEW_BG, MUTED, PRIMARY
+from style import PREVIEW_BG, MUTED, PRIMARY, BORDER, ACCENT_LINE
 
 STRIP_PAGE_SIZE = (700, 900)   # page size at 100% zoom
 ZOOM_MIN = 0.5
@@ -25,10 +25,11 @@ ZOOM_STEP = 1.25          # buttons / keyboard
 WHEEL_SENSITIVITY = 1.0015  # per wheel unit: one mouse notch (120) is about x1.2, touchpads zoom smoothly
 ZOOM_ANIM_MS = 140
 
-MIME_IMAGE = "application/x-printcost-image"   # a picture being dragged from one page to another
-MIME_CLIP = "application/x-printcost-size"      # size (points) of a picture copied from a page
-HANDLE = 10   # grab distance of a resize handle, in pixels
-MIN_PX = 14   # smallest image side while resizing
+MIME_IMAGE = "application/x-printcost-image"
+MIME_CLIP = "application/x-printcost-size"
+HANDLE = 10
+MIN_PX = 14
+SNAP = 6
 CURSORS = {
     "nw": Qt.CursorShape.SizeFDiagCursor, "se": Qt.CursorShape.SizeFDiagCursor,
     "ne": Qt.CursorShape.SizeBDiagCursor, "sw": Qt.CursorShape.SizeBDiagCursor,
@@ -96,13 +97,11 @@ def _mark_not_included(pm):
 
 
 class PageLabel(QLabel):
-    """One page. In edit mode it lets you select, move and resize the images on it and drop picture files in.
-    Image rectangles are kept as fractions of the page (0..1), so zooming never breaks them."""
-    changed = pyqtSignal(int, int, object)     # page, image index, new rect (fractions of the page)
-    dropped = pyqtSignal(int, list, object)    # page, picture files, drop point (fractions)
+    changed = pyqtSignal(int, int, object)
+    dropped = pyqtSignal(int, list, object)
     selection_changed = pyqtSignal()
-    image_dropped = pyqtSignal(int, object, object)      # page, what was dragged, drop point (fractions)
-    context_requested = pyqtSignal(int, int, object, object)  # page, image index (-1 = none), point (fractions), global pos
+    image_dropped = pyqtSignal(int, object, object)
+    context_requested = pyqtSignal(int, int, object, object)
     drag_started = pyqtSignal()
     drag_finished = pyqtSignal()
 
@@ -113,14 +112,15 @@ class PageLabel(QLabel):
         self.accept_files = False
         self.sel = -1
         self._provider = provider
-        self._size_provider = size_provider   # page index -> (width, height) in points
-        self._drop_img = None   # a picture from another page hovering over this one
+        self._size_provider = size_provider
+        self._drop_img = None
         self._drop_at = None
         self._items = None
         self._hover = -1
         self._drag = None
         self._drop_hint = False
-        self._crop = None   # {'bounds', 'box'} (fractions of the page) while trimming a picture
+        self._crop = None
+        self._guides_x, self._guides_y, self._match = [], [], []
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
 
@@ -144,6 +144,15 @@ class PageLabel(QLabel):
         c = rect.center()
         self.sel = min(range(len(items)), default=-1, key=lambda i: abs(items[i]["rect"].center().x() - c.x())
                        + abs(items[i]["rect"].center().y() - c.y()))
+
+    def selected_rect(self):
+        """The selected image's rectangle in pixels (live while it is dragged), or None."""
+        items = self.items() if self.edit else []
+        if not (0 <= self.sel < len(items)):
+            return None
+        if self._drag and not self._drag.get("crop"):
+            return QRectF(self._drag["cur"])
+        return self._px(items[self.sel]["rect"])
 
     # ---------------- geometry ----------------
 
@@ -195,6 +204,88 @@ class PageLabel(QLabel):
         if "s" in handle:
             b = max(y, t + MIN_PX)
         return QRectF(QPointF(l, t), QPointF(r, b))
+
+    # ---------------- snapping ----------------
+
+    def _snap_targets(self):
+        """What the selected image can snap to: the page edges and centre, and the other images' edges, centres, sizes."""
+        W, H = float(self.width()), float(self.height())
+        xs, ys, ws, hs = [0.0, W / 2, W], [0.0, H / 2, H], [], []
+        for i, it in enumerate(self.items()):
+            if i == self.sel:
+                continue
+            r = self._px(it["rect"])
+            xs += [r.left(), r.center().x(), r.right()]
+            ys += [r.top(), r.center().y(), r.bottom()]
+            ws.append((r.width(), r))
+            hs.append((r.height(), r))
+        return xs, ys, ws, hs
+
+    @staticmethod
+    def _nearest(values, targets):
+        """(distance, shift) for the closest value-to-target pair."""
+        best = (SNAP + 1, 0.0)
+        for v in values:
+            for t in targets:
+                if abs(v - t) < best[0]:
+                    best = (abs(v - t), t - v)
+        return best
+
+    def _snap_move(self, r):
+        xs, ys, _, _ = self._snap_targets()
+        dx = self._nearest((r.left(), r.center().x(), r.right()), xs)
+        dy = self._nearest((r.top(), r.center().y(), r.bottom()), ys)
+        r.translate(dx[1] if dx[0] <= SNAP else 0.0, dy[1] if dy[0] <= SNAP else 0.0)
+        r.moveLeft(min(max(r.left(), 0), self.width() - r.width()))
+        r.moveTop(min(max(r.top(), 0), self.height() - r.height()))
+        self._guides_x = [t for t in xs if any(abs(v - t) < 0.75 for v in (r.left(), r.center().x(), r.right()))]
+        self._guides_y = [t for t in ys if any(abs(v - t) < 0.75 for v in (r.top(), r.center().y(), r.bottom()))]
+        self._match = []
+        return r
+
+    def _snap_resize(self, r, handle, orig):
+        """Snap the edge being dragged to a guide, or snap the size to match another image's width or height."""
+        xs, ys, ws, hs = self._snap_targets()
+        W, H = self.width(), self.height()
+        if len(handle) == 2:
+            ax = orig.right() if "w" in handle else orig.left()
+            ay = orig.bottom() if "n" in handle else orig.top()
+            ex = r.left() if "w" in handle else r.right()
+            ey = r.top() if "n" in handle else r.bottom()
+            cands = [(abs(ex - t), abs(t - ax) / orig.width()) for t in xs]
+            cands += [(abs(ey - t), abs(t - ay) / orig.height()) for t in ys]
+            cands += [(abs(r.width() - w), w / orig.width()) for w, _ in ws]
+            cands += [(abs(r.height() - h), h / orig.height()) for h, _ in hs]
+            d, s = min(cands, default=(SNAP + 1, 1.0))
+            if d <= SNAP and s * min(orig.width(), orig.height()) >= MIN_PX:
+                s = min(s, (ax if "w" in handle else W - ax) / orig.width(),
+                        (ay if "n" in handle else H - ay) / orig.height())
+                w, h = orig.width() * s, orig.height() * s
+                r = QRectF(ax - w if "w" in handle else ax, ay - h if "n" in handle else ay, w, h)
+        else:
+            def pick(edge, lines, from_sizes):
+                best = (SNAP + 1, edge)
+                for t in lines + from_sizes:
+                    if abs(edge - t) < best[0]:
+                        best = (abs(edge - t), t)
+                return best[1]
+            l, t, rt, b = r.left(), r.top(), r.right(), r.bottom()
+            if "e" in handle:
+                rt = min(max(pick(rt, xs, [l + w for w, _ in ws]), l + MIN_PX), W)
+            if "w" in handle:
+                l = max(min(pick(l, xs, [rt - w for w, _ in ws]), rt - MIN_PX), 0)
+            if "s" in handle:
+                b = min(max(pick(b, ys, [t + h for h, _ in hs]), t + MIN_PX), H)
+            if "n" in handle:
+                t = max(min(pick(t, ys, [b - h for h, _ in hs]), b - MIN_PX), 0)
+            r = QRectF(QPointF(l, t), QPointF(rt, b))
+        mx = ([r.left()] if "w" in handle else []) + ([r.right()] if "e" in handle else [])
+        my = ([r.top()] if "n" in handle else []) + ([r.bottom()] if "s" in handle else [])
+        self._guides_x = [t for t in xs if any(abs(v - t) < 0.75 for v in mx)]
+        self._guides_y = [t for t in ys if any(abs(v - t) < 0.75 for v in my)]
+        self._match = ([q for w, q in ws if mx and abs(r.width() - w) < 0.75]
+                       + [q for h, q in hs if my and abs(r.height() - h) < 0.75])
+        return r
 
     # ---------------- crop ----------------
 
@@ -285,15 +376,20 @@ class PageLabel(QLabel):
         if d:
             if d["mode"] == "move":
                 if not self.rect().adjusted(-8, -8, 8, 8).contains(pos.toPoint()):
-                    self._start_external_drag()  # it left the page: it becomes a picture you can drop on any page
+                    self._start_external_drag()
                     return
                 r = QRectF(d["orig"])
                 r.translate(pos - d["start"])
                 r.moveLeft(min(max(r.left(), 0), self.width() - r.width()))
                 r.moveTop(min(max(r.top(), 0), self.height() - r.height()))
-                d["cur"] = r
+                snap = not (e.modifiers() & Qt.KeyboardModifier.AltModifier)
+                d["cur"] = self._snap_move(r) if snap else r
             else:
                 d["cur"] = self._resized(d["orig"], d["mode"], pos)
+                if not (e.modifiers() & Qt.KeyboardModifier.AltModifier):
+                    d["cur"] = self._snap_resize(d["cur"], d["mode"], d["orig"])
+            if e.modifiers() & Qt.KeyboardModifier.AltModifier:
+                self._guides_x, self._guides_y, self._match = [], [], []
             self.update()
             return
         kind, v = self._hit(pos)
@@ -318,6 +414,7 @@ class PageLabel(QLabel):
         d = self._drag
         if d and e.button() == Qt.MouseButton.LeftButton:
             self._drag = None
+            self._guides_x, self._guides_y, self._match = [], [], []
             if d.get("crop"):
                 self.update()
                 return
@@ -540,6 +637,96 @@ class PageLabel(QLabel):
                 p.setPen(QPen(accent, 1.5))
                 for pt in self._handles(r).values():
                     p.drawRect(QRectF(pt.x() - 4, pt.y() - 4, 8, 8))
+            if self._drag:
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(QColor(ACCENT_LINE), 1, Qt.PenStyle.DashLine))
+                for gx in self._guides_x:
+                    p.drawLine(QPointF(gx, 0), QPointF(gx, self.height()))
+                for gy in self._guides_y:
+                    p.drawLine(QPointF(0, gy), QPointF(self.width(), gy))
+                for m in self._match:
+                    p.drawRect(m)
+        p.end()
+
+
+class Ruler(QWidget):
+    THICK = 22
+
+    def __init__(self, horizontal, parent=None):
+        super().__init__(parent)
+        self.horizontal = horizontal
+        self._start = 0.0
+        self._px = 0.0
+        self._inches = 0.0
+        self._marks = None
+        if horizontal:
+            self.setFixedHeight(self.THICK)
+        else:
+            self.setFixedWidth(self.THICK)
+
+    def set_page(self, start, length_px, inches):
+        state = (round(start, 1), round(length_px, 1), round(inches, 3))
+        if state != (self._start, self._px, self._inches):
+            self._start, self._px, self._inches = state
+            self.update()
+
+    def set_marks(self, marks):
+        marks = None if marks is None else (round(marks[0], 1), round(marks[1], 1))
+        if marks != self._marks:
+            self._marks = marks
+            self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        w, h = self.width(), self.height()
+        hor = self.horizontal
+        length = w if hor else h
+        p.fillRect(self.rect(), QColor(PREVIEW_BG))
+        if self._px > 0 and self._inches > 0:
+            a, ppi = self._start, self._px / self._inches
+            p.fillRect(QRectF(a, 0, self._px, h) if hor else QRectF(0, a, w, self._px), QColor("white"))
+            p.setPen(QPen(QColor(MUTED), 1))
+            font = QFont()
+            font.setPixelSize(10)
+            p.setFont(font)
+            step = 1 / 8 if ppi >= 60 else 1 / 4 if ppi >= 30 else 1 / 2
+            for k in range(int(self._inches / step + 1e-6) + 1):
+                pos = a + k * step * ppi
+                if pos < -20 or pos > length + 20:
+                    continue
+                inch = k * step
+                if abs(inch - round(inch)) < 1e-6:
+                    if k == 0:
+                        continue
+                    box = QRectF(pos - 12, 0, 24, h) if hor else QRectF(0, pos - 8, w, 16)
+                    p.drawText(box, Qt.AlignmentFlag.AlignCenter, str(int(round(inch))))
+                else:
+                    n = 7 if abs(inch * 2 - round(inch * 2)) < 1e-6 else 4
+                    if hor:
+                        p.drawLine(QPointF(pos, (h - n) / 2), QPointF(pos, (h + n) / 2))
+                    else:
+                        p.drawLine(QPointF((w - n) / 2, pos), QPointF((w + n) / 2, pos))
+            p.setPen(QPen(QColor(MUTED), 1))
+            for edge in (a, a + self._px):
+                if hor:
+                    p.drawLine(QPointF(edge, 0), QPointF(edge, h))
+                else:
+                    p.drawLine(QPointF(0, edge), QPointF(w, edge))
+            if self._marks:
+                lo, hi = self._marks
+                accent = QColor(ACCENT_LINE)
+                shade = QColor(accent)
+                shade.setAlpha(40)
+                p.fillRect(QRectF(lo, 0, hi - lo, h) if hor else QRectF(0, lo, w, hi - lo), shade)
+                p.setPen(QPen(accent, 2))
+                for edge in (lo, hi):
+                    if hor:
+                        p.drawLine(QPointF(edge, 0), QPointF(edge, h))
+                    else:
+                        p.drawLine(QPointF(0, edge), QPointF(w, edge))
+        p.setPen(QPen(QColor(BORDER), 1))
+        p.drawLine(0, h - 1, w, h - 1) if hor else p.drawLine(w - 1, 0, w - 1, h)
         p.end()
 
 
@@ -735,7 +922,24 @@ class FullPreviewDialog(QDialog):
         self.stack = QStackedWidget()
         self.stack.addWidget(loading)      # index 0
         self.stack.addWidget(self.scroll)  # index 1
-        layout.addWidget(self.stack, 1)
+        self.h_ruler = Ruler(True)
+        self.v_ruler = Ruler(False)
+        corner = QWidget()
+        corner.setFixedSize(Ruler.THICK, Ruler.THICK)
+        corner.setStyleSheet(f"background: {PREVIEW_BG};")
+        self.rulers = [corner, self.h_ruler, self.v_ruler]
+        strip_grid = QGridLayout()
+        strip_grid.setSpacing(0)
+        strip_grid.addWidget(corner, 0, 0)
+        strip_grid.addWidget(self.h_ruler, 0, 1)
+        strip_grid.addWidget(self.v_ruler, 1, 0)
+        strip_grid.addWidget(self.stack, 1, 1)
+        layout.addLayout(strip_grid, 1)
+        for w in self.rulers:
+            w.setVisible(False)
+        self._ruler_timer = QTimer(self)
+        self._ruler_timer.setInterval(50)
+        self._ruler_timer.timeout.connect(self._update_rulers)
 
         QApplication.clipboard().dataChanged.connect(self._refresh_paste)  # Paste lights up when something is copied
         self._rerender_timer = QTimer(self)
@@ -861,6 +1065,13 @@ class FullPreviewDialog(QDialog):
         if on:
             self._paste_ok = self._can_paste()
         self._show_true_pages(on)
+        for w in self.rulers:
+            w.setVisible(on)
+        if on:
+            self._ruler_timer.start()
+            self._update_rulers()
+        else:
+            self._ruler_timer.stop()
         for w in self.edit_tools:
             w.setVisible(on)
         for lbl in self.page_labels:
@@ -1166,6 +1377,23 @@ class FullPreviewDialog(QDialog):
         lbl.drag_started.connect(self._autoscroll.start)
         lbl.drag_finished.connect(self._autoscroll.stop)
         return lbl
+
+    def _update_rulers(self):
+        if not self.edit_mode or self.stack.currentIndex() == 0 or not self.page_labels:
+            for ruler in (self.h_ruler, self.v_ruler):
+                ruler.set_page(0, 0, 0)
+                ruler.set_marks(None)
+            return
+        sel = next((l for l in self.page_labels if l.selected_rect() is not None), None)
+        lbl = sel or self.page_labels[self._current_page()]
+        w_pt, h_pt = self._page_size(self.page_labels.index(lbl))
+        x0 = lbl.x() - self.scroll.horizontalScrollBar().value()
+        y0 = lbl.y() - self.scroll.verticalScrollBar().value()
+        self.h_ruler.set_page(x0, lbl.width(), w_pt / 72)
+        self.v_ruler.set_page(y0, lbl.height(), h_pt / 72)
+        r = sel.selected_rect() if sel else None
+        self.h_ruler.set_marks((x0 + r.left(), x0 + r.right()) if r else None)
+        self.v_ruler.set_marks((y0 + r.top(), y0 + r.bottom()) if r else None)
 
     def _refresh_hint(self):
         text = f"{self._mode_name} preview  ·  Ctrl + scroll to zoom"
