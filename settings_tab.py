@@ -10,7 +10,7 @@ import sys
 import pricing
 import autostart
 import updater
-from style import PRIMARY, TEXT
+from style import PRIMARY, TEXT, CARD_BG, BORDER
 from notes import notice
 
 QUALITY_LABELS = [("draft", "Draft"), ("standard", "Standard"), ("high", "High")]
@@ -561,8 +561,13 @@ class SettingsTab(QWidget):
         save_btn.setObjectName("primary")
         save_btn.clicked.connect(self._save)
         save_row.addWidget(save_btn)
-        root.addLayout(save_row)
         root.addStretch()
+        footer = QFrame()
+        footer.setObjectName("footer")
+        footer.setStyleSheet(f"QFrame#footer {{ background: {CARD_BG}; border-top: 1px solid {BORDER}; }}")
+        save_row.setContentsMargins(16, 10, 16, 10)
+        footer.setLayout(save_row)
+        outer.addWidget(footer)
 
     def _toggle_permit(self, on):
         if on and not PermitRulesDialog(self).exec():
@@ -681,21 +686,15 @@ class SettingsTab(QWidget):
 
     def _reset_to_default(self):
         if notice(self, "danger", "Reset to Default",
-                  "This resets paper sizes, paper types, ink prices and percentages to default.",
+                  "This resets everything in Settings: paper, ink, percentages, receipt details and discounts.",
                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
 
         defaults = pricing.load_default_settings()
-        self.settings["paper_sizes"] = defaults["paper_sizes"]
-        self.settings["ink_prices"] = defaults["ink_prices"]
-        self.settings["default_percentages"] = defaults["default_percentages"]
-        self.settings["min_price_per_page"] = defaults["min_price_per_page"]
-        self.settings["min_price_color"] = defaults["min_price_color"]
-        self.settings["max_price_per_page"] = defaults["max_price_per_page"]
-        self.settings["color_threshold_pct"] = defaults["color_threshold_pct"]
-        self.settings["quality_multipliers"] = defaults["quality_multipliers"]
-        self.settings["high_black_mix"] = defaults["high_black_mix"]
-        self.settings["paper_types"] = defaults["paper_types"]
+        keep = ("asked_about_autostart", "update_remind_after")
+        for key, value in defaults.items():
+            if key not in keep:
+                self.settings[key] = value
 
         pricing.save_settings(self.settings)
         self.on_save()
@@ -713,6 +712,13 @@ class SettingsTab(QWidget):
         self.black_mix_input.setText(str(self.settings["high_black_mix"]))
         for key, field in self.quality_inputs.items():
             field.setText(str(self.settings["quality_multipliers"][key]))
+        self.shop_input.setText(self.settings["shop_name"])
+        self.permit_box.blockSignals(True)
+        self.permit_box.setChecked(False)
+        self.permit_box.blockSignals(False)
+        self.tin_input.setText("")
+        self.tin_label.setVisible(False)
+        self.tin_input.setVisible(False)
 
         QMessageBox.information(self, "Reset", "Settings reset to default.")
         

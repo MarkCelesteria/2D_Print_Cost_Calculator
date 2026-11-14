@@ -74,7 +74,8 @@ class MainWindow(QMainWindow):
     def __init__(self, initial_file=None, auto_calculate=False):
         super().__init__()
         self.setWindowTitle(f"Print Cost Calculator v{updater.APP_VERSION}")
-        self.resize(900, 720)
+        self.setMinimumSize(900, 860)
+        self.resize(940, 860)
 
         self.settings = pricing.load_settings()
 

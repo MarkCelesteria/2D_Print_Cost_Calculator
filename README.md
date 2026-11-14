@@ -23,6 +23,7 @@ out after the fact.
   by the math (not filtered afterward).
 - **Native system tray** — closing the window minimizes it to the tray
   instead of quitting; click the tray icon to bring it back instantly.
+- **Poster mode** — slice one picture or PDF page into a grid of sheets (see below).
 - **Right-click "Calculate Print Cost"** context menu integration (optional,
   see `add_context_menu.reg`).
 
@@ -38,6 +39,8 @@ print_cost_calculator/
   style.py                  <- shared QSS stylesheet / color palette
   analyzer.py                 <- CMYK conversion, PDF/DOCX rendering, cost math
   pricing.py                    <- settings persistence (settings.json)
+  poster.py                       <- poster slicing, preview image, poster pricing
+  poster_dialog.py                  <- the Poster window (grid, fit, margins, preview)
 ```
 
 ## Setup
@@ -56,6 +59,25 @@ For accurate `.docx` analysis (and preview), also install **LibreOffice**
 
 `.pdf` files are always analyzed and previewed precisely — no LibreOffice
 needed.
+
+## Poster (tiled printing)
+
+Press **Poster** next to *Browse files*. It uses the image / PDF already loaded, or asks you to pick one.
+
+- **Grid**: presets (2×2, 3×2, 3×3, 4×3) or any columns × rows; *Suggest* picks the grid closest to the picture's shape.
+  The window shows the final size, e.g. `4×3 pages of Short = 34 × 33 in`.
+- **Sheets**: portrait or landscape. **Fit** keeps the proportions (blank bands); **Fill** crops the edges.
+- **Printer margin**: the white border your printer can't print on. `0` = borderless (default). Each sheet's
+  picture is cut to the printable area, so nothing is lost under the margin.
+- **Overlap** (e.g. 0.25 in) gives a strip to trim and glue. **Crop / alignment marks** and **sheet labels**
+  (A1, A2, B1 ...) are optional and print on the page.
+- **Preview**: the whole poster with the grid and print-order numbers; click a tile to select it.
+- **Pricing**: calculated per sheet (default), a flat poster fee, or a fixed price per sheet. A flat fee applies
+  when all sheets are printed; reprinting one sheet uses the calculated price.
+- The result is an ordinary multi-page PDF (row by row), so Calculate, the per-page table, Full Preview,
+  Print and the receipt all work on it. The *Print* box under the file name picks one sheet to reprint.
+- Poster sheets print at 100% (not scaled to the printer's page). Turn off "Fit to page" in the printer's
+  Preferences.
 
 ## Turning it into a real double-clickable app
 

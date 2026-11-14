@@ -2,7 +2,7 @@ import json
 
 from PyQt6.QtWidgets import (
     QDialog, QScrollArea, QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
-    QStackedWidget, QProgressBar, QFileDialog, QMessageBox, QMenu, QApplication, QGridLayout
+    QStackedWidget, QProgressBar, QFileDialog, QMessageBox, QMenu, QApplication, QGridLayout, QComboBox
 )
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QTimer, QEvent, QRectF, QPointF, QPoint, QSize, QEasingCurve, QVariantAnimation,
@@ -837,6 +837,19 @@ class FullPreviewDialog(QDialog):
         self.edit_tip.setObjectName("muted")
         self.edit_tools = [self.undo_btn, self.redo_btn, self.reset_btn, self.add_btn, self.copy_btn, self.paste_btn,
                            self.delete_btn, self.crop_btn, self.position_btn, self.pages_btn, self.edit_tip]
+        self.paper_combo = QComboBox()
+        self.paper_combo.addItem("Paper size (all pages)", None)
+        for p in self.paper_sizes:
+            self.paper_combo.addItem(p["name"], (p["width_in"] * 72, p["height_in"] * 72))
+        self.paper_combo.setToolTip("Change the paper size of every page")
+        self.paper_combo.activated.connect(lambda _: self._apply_page_setup())
+        self.orient_combo = QComboBox()
+        self.orient_combo.addItem("Orientation (all pages)", None)
+        self.orient_combo.addItem("Portrait", "portrait")
+        self.orient_combo.addItem("Landscape", "landscape")
+        self.orient_combo.setToolTip("Turn every page to portrait or landscape")
+        self.orient_combo.activated.connect(lambda _: self._apply_page_setup())
+        self.edit_tools += [self.paper_combo, self.orient_combo]
         for w in self.edit_tools + [self.apply_crop_btn, self.cancel_crop_btn]:
             w.setVisible(False)
         export_btn = button("Export", self._export, "Save the document (with your edits) as a PDF")
@@ -879,6 +892,8 @@ class FullPreviewDialog(QDialog):
             for w in group:
                 edit_row.addWidget(w)
             edit_row.addSpacing(12)
+        edit_row.addWidget(self.paper_combo)
+        edit_row.addWidget(self.orient_combo)
         edit_row.addWidget(self.apply_crop_btn)
         edit_row.addWidget(self.cancel_crop_btn)
         edit_row.addStretch()
@@ -1118,7 +1133,7 @@ class FullPreviewDialog(QDialog):
         for w in (self.delete_btn, self.crop_btn, self.position_btn, self.copy_btn):
             w.setEnabled(has_sel and not cropping)
         self.paste_btn.setEnabled(self._paste_ok and not cropping)
-        for w in (self.reset_btn, self.add_btn, self.pages_btn):
+        for w in (self.reset_btn, self.add_btn, self.pages_btn, self.paper_combo, self.orient_combo):
             w.setEnabled(not cropping)
         self.apply_crop_btn.setVisible(cropping)
         self.cancel_crop_btn.setVisible(cropping)
@@ -1359,6 +1374,31 @@ class FullPreviewDialog(QDialog):
         page, idx = lbl.index, lbl.sel
         xref = lbl.items()[idx]["xref"]
         self._edit_page(page, lambda: self.editor.arrange(page, idx, xref, how))
+
+    # ---------------- paper size and orientation ----------------
+
+    def _apply_page_setup(self):
+        """Paper size and orientation always apply to every page, so the whole document prints on one sheet type."""
+        paper, orientation = self.paper_combo.currentData(), self.orient_combo.currentData()
+        self.paper_combo.setCurrentIndex(0)
+        self.orient_combo.setCurrentIndex(0)
+        if paper is None and orientation is None:
+            return
+        targets = list(range(self.page_count))
+        running = self._quiesce()
+        try:
+            self.editor.set_page_size(targets, paper, orientation, True)
+        except Exception as e:
+            if "already has that size" not in str(e):
+                QMessageBox.warning(self, "Couldn't change the pages", str(e))
+            if running:
+                self._start_worker()
+            return
+        for i in targets:
+            self._page_pts.pop(i, None)
+            self.page_labels[i].invalidate()
+        self._start_worker()
+        self._update_edit_buttons()
 
     # ---------------- pages ----------------
 

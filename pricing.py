@@ -20,6 +20,8 @@ DEFAULT_SETTINGS = {
         {"name": "Long (8.5x13 in)", "width_in": 8.5, "height_in": 13.0, "price": 1.5},
         {"name": "Legal (8.5x14 in)", "width_in": 8.5, "height_in": 14.0, "price": 1.75},
         {"name": "A4 (8.27x11.69 in)", "width_in": 8.27, "height_in": 11.69, "price": 1.25},
+        {"name": "A5 (5.83x8.27 in)", "width_in": 5.83, "height_in": 8.27, "price": 0.75},
+        {"name": "A6 (4.13x5.83 in)", "width_in": 4.13, "height_in": 5.83, "price": 0.5},
         {"name": "3R (3.5x5 in)", "width_in": 3.5, "height_in": 5.0, "price": 0.25},
         {"name": "4R (4x6 in)", "width_in": 4.0, "height_in": 6.0, "price": 0.5},
         {"name": "5R (5x7 in)", "width_in": 5.0, "height_in": 7.0, "price": 0.75},
@@ -61,6 +63,11 @@ DEFAULT_SETTINGS = {
     "discounts": [],
     "bulk_discounts": [],
     "asked_about_autostart": False,
+    "poster": {
+        "cols": 3, "rows": 2, "landscape": False, "fill": False,
+        "overlap_in": 0.0, "margin_in": 0.25, "marks": False, "labels": False,
+        "pricing_mode": "calculated", "fee": 0.0,
+    },
 }
 
 def load_default_settings() -> dict:
@@ -78,9 +85,18 @@ def load_settings() -> dict:
 
     for key, value in DEFAULT_SETTINGS.items():
         data.setdefault(key, json.loads(json.dumps(value)))
-    for group in ("ink_prices", "default_percentages", "quality_multipliers"):
+    for group in ("ink_prices", "default_percentages", "quality_multipliers", "poster"):
         for k, v in DEFAULT_SETTINGS[group].items():
             data[group].setdefault(k, v)
+    if not data.get("a5_a6_added"):
+        have = {p["name"] for p in data["paper_sizes"]}
+        at = next((i + 1 for i, p in enumerate(data["paper_sizes"]) if p["name"].startswith("A4")),
+                  len(data["paper_sizes"]))
+        for p in DEFAULT_SETTINGS["paper_sizes"]:
+            if p["name"].startswith(("A5", "A6")) and p["name"] not in have:
+                data["paper_sizes"].insert(at, dict(p))
+                at += 1
+        data["a5_a6_added"] = True
     return data
 
 

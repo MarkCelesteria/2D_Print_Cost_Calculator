@@ -173,6 +173,13 @@ def _paste(p, c, white):
         p.drawRoundedRect(QRectF(21, y, 22, 3), 1.5, 1.5)
 
 
+def _poster(p, c, white):
+    _stroke(p, c, 5)
+    p.drawRoundedRect(QRectF(8, 8, 48, 48), 6, 6)               # the whole poster
+    p.drawLine(QPointF(32, 8), QPointF(32, 56))                 # cut into sheets
+    p.drawLine(QPointF(8, 32), QPointF(56, 32))
+
+
 def _check(p, c, white):
     _stroke(p, c, 9)
     p.drawPolyline(_poly((13, 34), (26, 47), (51, 18)))
@@ -186,7 +193,8 @@ def _close(p, c, white):
 
 _DRAW = {"printer": _printer, "receipt": _receipt, "tag": _tag, "undo": _undo, "redo": _redo, "reset": _reset,
          "image-add": _image_add, "trash": _trash, "crop": _crop, "position": _position, "pages": _pages,
-         "copy": _copy, "paste": _paste, "page-setup": _page_setup, "check": _check, "close": _close}
+         "copy": _copy, "paste": _paste, "page-setup": _page_setup, "check": _check, "close": _close,
+         "poster": _poster}
 
 
 def make_icon(name, color=PRIMARY_DARK):

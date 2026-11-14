@@ -3,7 +3,7 @@ import os
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFrame, QComboBox, QLineEdit, QFileDialog, QMessageBox, QTableWidget,
-    QTableWidgetItem, QHeaderView, QScrollArea, QInputDialog, QDoubleSpinBox
+    QTableWidgetItem, QHeaderView, QScrollArea, QInputDialog, QDoubleSpinBox, QApplication
 )
 from PyQt6.QtCore import Qt, QSize
 
@@ -13,10 +13,13 @@ from preview_widget import PreviewWidget
 from worker import AnalyzeWorker, LoadDocumentWorker
 from analyzer import (render_pdf_page, apply_preview_mode, compute_cost, cleanup_temp_dirs,
                       parse_page_ranges, format_page_ranges, get_document_page_size, closest_paper,
-                      get_pdf_page_inches, fit_page_to_paper, SUPPORTED_EXTS, is_image)
+                      get_pdf_page_inches, fit_page_to_paper, SUPPORTED_EXTS, IMAGE_EXTS, is_image,
+                      get_pdf_page_count)
 from full_preview_dialog import FullPreviewDialog
 from print_helper import print_pdf
 from receipt import ReceiptDialog
+import poster
+from poster_dialog import PosterDialog
 from notes import label_style, notice
 
 PCT_LABELS = [
@@ -61,6 +64,7 @@ class CalculateTab(QWidget):
         self.current_page = 0
         self.is_approx = False
 
+        self.poster_job = None  # set while the loaded document is a tiled poster
         self.pct_inputs = {}
         self.quality_inputs = {}
         self.manual_discount = None
@@ -127,10 +131,21 @@ class CalculateTab(QWidget):
         self.full_preview_btn.setEnabled(False)
         left_layout.addWidget(self.full_preview_btn)
 
-        browse_btn = QPushButton("Browse (PDF / Word / images)")
+        browse_row = QHBoxLayout()
+        browse_btn = QPushButton("Browse files")
         browse_btn.setObjectName("secondary")
+        browse_btn.setToolTip("PDF, Word or images")
         browse_btn.clicked.connect(self._browse)
-        left_layout.addWidget(browse_btn)
+        browse_row.addWidget(browse_btn, 1)
+        self.poster_btn = QPushButton("Poster")
+        self.poster_btn.setObjectName("secondary")
+        self.poster_btn.setIcon(make_icon("poster"))
+        self.poster_btn.setIconSize(QSize(18, 18))
+        self.poster_btn.setToolTip("Slice one picture or PDF page into a grid of sheets.\n"
+                                   "Uses the file already loaded, or asks you to pick one.")
+        self.poster_btn.clicked.connect(self._open_poster)
+        browse_row.addWidget(self.poster_btn, 1)
+        left_layout.addLayout(browse_row)
 
         drop_hint = QLabel("or drag & drop files here")
         drop_hint.setObjectName("muted")
@@ -141,6 +156,37 @@ class CalculateTab(QWidget):
         self.file_label.setObjectName("muted")
         self.file_label.setWordWrap(True)
         left_layout.addWidget(self.file_label)
+
+        self.poster_box = QFrame()
+        self.poster_box.setObjectName("posterBox")
+        self.poster_box.setStyleSheet("QFrame#posterBox { background: transparent; border: none; }")
+        pb = QVBoxLayout(self.poster_box)
+        pb.setContentsMargins(0, 4, 0, 0)
+        pb.setSpacing(6)
+        self.poster_label = QLabel("")
+        self.poster_label.setWordWrap(True)
+        self.poster_label.setStyleSheet(label_style("info"))
+        pb.addWidget(self.poster_label)
+        tile_row = QHBoxLayout()
+        tile_row.addWidget(QLabel("Print"))
+        self.tile_combo = QComboBox()
+        self.tile_combo.setToolTip("Choose one sheet to reprint a bad one")
+        self.tile_combo.currentIndexChanged.connect(self._on_tile_chosen)
+        tile_row.addWidget(self.tile_combo, 1)
+        pb.addLayout(tile_row)
+        poster_btns = QHBoxLayout()
+        edit_poster = QPushButton("Edit poster")
+        edit_poster.setObjectName("secondary")
+        edit_poster.clicked.connect(self._open_poster)
+        remove_poster = QPushButton("Remove")
+        remove_poster.setObjectName("secondary")
+        remove_poster.setToolTip("Go back to the normal document")
+        remove_poster.clicked.connect(self._remove_poster)
+        poster_btns.addWidget(edit_poster, 1)
+        poster_btns.addWidget(remove_poster, 1)
+        pb.addLayout(poster_btns)
+        self.poster_box.hide()
+        left_layout.addWidget(self.poster_box)
         left_layout.addStretch()
 
         right_col = QVBoxLayout()
@@ -191,11 +237,13 @@ class CalculateTab(QWidget):
         self.quality_combo.setCurrentText("Standard")
         top.addWidget(self.quality_combo, 2, 3)
 
-        top.addWidget(QLabel("Image fit"), 3, 0)
+        self.fit_label = QLabel("Image fit")
+        top.addWidget(self.fit_label, 3, 0)
         self.fit_combo = QComboBox()
         self.fit_combo.addItems(["Fit (with margins)", "Fill (edge to edge)"])
         top.addWidget(self.fit_combo, 3, 1)
-        top.addWidget(QLabel("Per page"), 3, 2)
+        self.per_page_label = QLabel("Per page")
+        top.addWidget(self.per_page_label, 3, 2)
         self.per_page_combo = QComboBox()
         self.per_page_combo.addItems(["1", "2", "4"])
         top.addWidget(self.per_page_combo, 3, 3)
@@ -205,7 +253,8 @@ class CalculateTab(QWidget):
         self.fit_combo.currentIndexChanged.connect(self._reload_layout)
         self.per_page_combo.currentIndexChanged.connect(self._reload_layout)
 
-        opts_layout.addWidget(QLabel("Print pages"), 4, 0)
+        self.pages_label = QLabel("Print pages")
+        opts_layout.addWidget(self.pages_label, 4, 0)
         self.pages_input = QLineEdit()
         self.pages_input.setPlaceholderText("All pages (or e.g. 1-6, 8-9, 11, 12)")
         self.pages_input.textChanged.connect(self._on_pages_changed)
@@ -227,6 +276,7 @@ class CalculateTab(QWidget):
         self.results_layout.setSpacing(10)
         self.results_scroll.setWidget(self.results_container)
         right_col.addWidget(self.results_scroll, 1)
+        self._update_input_states()
 
     def refresh_settings(self, settings):
         self.settings = settings
@@ -246,8 +296,8 @@ class CalculateTab(QWidget):
             combo.blockSignals(False)
 
         self.file_path = None
-
-        self.file_path = None
+        self.poster_job = None
+        self._update_poster_box()
         self.sources = []
         self.manual_discount = None
         self._load_id += 1
@@ -298,6 +348,8 @@ class CalculateTab(QWidget):
         paths = [p for p in paths if p.lower().endswith(SUPPORTED_EXTS)]
         if not paths:
             return
+        self.poster_job = None
+        self._update_poster_box()
         self.sources = paths
         self.file_path = paths[0]
         self._new_document = True
@@ -309,6 +361,8 @@ class CalculateTab(QWidget):
 
     def _reload_layout(self):
         # paper / fit / per-page changed: rebuild the merged PDF
+        if self.poster_job:  # posters are rebuilt by _on_paper_changed; fit / per-page don't apply
+            return
         if len(self.sources) > 1 or any(is_image(p) for p in self.sources):
             self._clear_results()
             self._start_load()
@@ -319,7 +373,7 @@ class CalculateTab(QWidget):
         self._new_document = False
         self.doc_size = None
         self._paper_auto_note = ""
-        if self.resolved_pdf_path and not any(is_image(p) for p in self.sources):
+        if self.resolved_pdf_path and (self.poster_job or not any(is_image(p) for p in self.sources)):
             try:
                 self.doc_size = get_document_page_size(self.resolved_pdf_path)
             except Exception:
@@ -334,6 +388,8 @@ class CalculateTab(QWidget):
         self._update_paper_note()
 
     def _on_paper_changed(self):
+        if self.poster_job:  # the sheets changed size, so the tiles have to be cut again
+            self._rebuild_poster()
         self._paper_auto_note = ""  # a manual choice: drop the "paper set to..." message
         self._update_paper_note()
         if self.resolved_pdf_path:
@@ -442,9 +498,29 @@ class CalculateTab(QWidget):
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(can_navigate)
         self.full_preview_btn.setEnabled(pdf_path is not None)
+        self._update_input_states()
 
         if auto_calculate:
             self._calculate()
+
+    def _update_input_states(self):
+        """Gray out the boxes that can't change anything for the current file."""
+        loaded = bool(self.sources) and not self.poster_job
+        images = sum(1 for p in self.sources if is_image(p))
+        pages_on = self.resolved_pdf_path is not None and self.page_count > 1
+        for box, label, on, tip in (
+            (self.fit_combo, self.fit_label, loaded and images > 0,
+             "Only used for pictures. PDF and Word pages keep their own layout."),
+            (self.per_page_combo, self.per_page_label, loaded and images > 1,
+             "Only used when you add more than one picture."),
+            (self.pages_input, self.pages_label, pages_on,
+             "Only used when the document has more than one page."),
+        ):
+            box.setEnabled(on)
+            label.setEnabled(on)
+            box.setToolTip("" if on else tip)
+        if not pages_on and self.pages_input.text():
+            self.pages_input.clear()
 
     def _current_mode(self):
         return {"Color": "color", "Grayscale": "grayscale", "Black & White": "bw"}[self.mode_combo.currentText()]
@@ -570,6 +646,7 @@ class CalculateTab(QWidget):
         self.page_count = page_count
         self.current_page = min(self.current_page, page_count - 1)
         self.pages_input.setText(format_page_ranges(included) if included else "")
+        self._update_input_states()
         if before and after and max(abs(a - b) for a, b in zip(before, after)) > 0.05:
             idx = closest_paper(after, self.settings["paper_sizes"])
             if idx is not None and idx != self.paper_combo.currentIndex():
@@ -583,6 +660,109 @@ class CalculateTab(QWidget):
             self.file_label.setText(self.file_label.text() + " · edited")
         self.status_label.setText("Document edited. Press Calculate to update the price.")
         self._show_current_page()
+
+    # ---------------- poster ----------------
+
+    def _open_poster(self):
+        job = self.poster_job
+        path = job["source"] if job else None
+        if path is None and len(self.sources) == 1 and not self.sources[0].lower().endswith(".docx"):
+            path = self.sources[0]
+        if path is None:
+            exts = " ".join(f"*{e}" for e in IMAGE_EXTS + (".pdf",))
+            path, _ = QFileDialog.getOpenFileName(self, "Choose a picture or PDF for the poster", "",
+                                                  f"Pictures and PDFs ({exts})")
+            if not path:
+                return
+        if self.paper_combo.count() == 0:
+            QMessageBox.warning(self, "No paper size", "Please add a paper size in Settings first.")
+            return
+        dialog = PosterDialog(self, path, self.settings, self._current_paper(), job=job)
+        if dialog.src is None:  # the file couldn't be opened (the dialog already said why)
+            dialog.deleteLater()
+            return
+        accepted = dialog.exec() == dialog.DialogCode.Accepted
+        result = dialog.result_data
+        dialog.deleteLater()
+        if accepted and result:
+            self._adopt_poster(result["pdf"], result["job"], result["tile"])
+
+    def _adopt_poster(self, pdf_path, job, tile=0):
+        """Use the tiled PDF like any loaded document: preview, price, print and receipt all work on it."""
+        try:
+            count = get_pdf_page_count(pdf_path)
+            first = render_pdf_page(pdf_path, 0)
+        except Exception as e:
+            QMessageBox.warning(self, "Couldn't open the poster", str(e))
+            return
+        self.poster_job = job
+        self.sources = [job["source"]]
+        self.file_path = job["source"]
+        self.manual_discount = None
+        self._clear_results()
+        self._load_id += 1
+        idx = self.paper_combo.findText(job["spec"]["paper"]["name"])
+        if idx >= 0 and idx != self.paper_combo.currentIndex():
+            self.paper_combo.blockSignals(True)
+            self.paper_combo.setCurrentIndex(idx)
+            self.paper_combo.blockSignals(False)
+        self._new_document = False  # the poster's paper was chosen on purpose: don't auto-switch it
+        self._on_document_loaded(pdf_path, count, first, False, load_id=self._load_id)
+        self.pages_input.clear()
+        self.file_label.setText(os.path.basename(job["source"]) + " · poster")
+        self._update_poster_box()
+        if tile:
+            self.current_page = min(tile, count - 1)
+            self._show_current_page()
+        self.status_label.setText("Poster ready. Press Calculate for the price.")
+
+    def _rebuild_poster(self):
+        job = self.poster_job
+        paper = self._current_paper()
+        if job is None or paper is None:
+            return
+        spec = dict(job["spec"], paper={"name": paper["name"], "width_in": paper["width_in"],
+                                        "height_in": paper["height_in"]})
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            pdf = poster.build_poster_pdf(job["source"], spec, job["page"])
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Couldn't rebuild the poster", str(e))
+            return
+        QApplication.restoreOverrideCursor()
+        self._adopt_poster(pdf, dict(job, spec=spec), tile=self.current_page)
+
+    def _remove_poster(self):
+        sources = list(self.sources)
+        self.poster_job = None
+        self._update_poster_box()
+        self.load_files(sources)
+
+    def _update_poster_box(self):
+        job = self.poster_job
+        self.poster_box.setVisible(job is not None)
+        if job is None:
+            return
+        d = poster.describe(job["spec"])
+        self.poster_label.setText(f"Poster {d['grid']} of {d['paper']} · {d['sheets']} sheets · {d['size']}")
+        cols = job["spec"]["cols"]
+        self.tile_combo.blockSignals(True)
+        self.tile_combo.clear()
+        self.tile_combo.addItem("All sheets")
+        for i in range(d["sheets"]):
+            self.tile_combo.addItem(f"{poster.tile_label(i, cols)}  (sheet {i + 1})")
+        self.tile_combo.blockSignals(False)
+
+    def _on_tile_chosen(self, index):
+        """One sheet = a one-page selection, so price, print and receipt follow the normal page logic."""
+        self.pages_input.setText("" if index <= 0 else str(index))
+
+    def _poster_receipt(self):
+        if not self.poster_job:
+            return None
+        d = poster.describe(self.poster_job["spec"])
+        return {"grid": d["grid"], "sheets": d["sheets"], "size": d["size"]}
 
     def _calculate(self):
         if not self.file_path:
@@ -725,6 +905,7 @@ class CalculateTab(QWidget):
 
     def _render_results(self, result, paper, is_approx, notify=True):
         self._result, self._result_paper, self._result_approx = result, paper, is_approx
+        poster.apply_pricing(result, self.poster_job, self.page_count)
         self._apply_discounts(result)
         cb = getattr(self, "on_calculated", None)
         if cb and notify:
@@ -732,7 +913,11 @@ class CalculateTab(QWidget):
             QTimer.singleShot(800, cb)
         summary_card, summary_layout = card()
         header_row = QHBoxLayout()
-        header = QLabel(f"{result['num_pages']} page(s) — {paper['name']}")
+        if self.poster_job:
+            d = poster.describe(self.poster_job["spec"])
+            header = QLabel(f"Poster {d['grid']} · {result['num_pages']} sheet(s) — {paper['name']}")
+        else:
+            header = QLabel(f"{result['num_pages']} page(s) — {paper['name']}")
         header.setObjectName("cardHeader")
         header_total = QLabel(f"{result['total']:.2f}")
         header_total.setObjectName("total")
@@ -746,30 +931,44 @@ class CalculateTab(QWidget):
         counts.setWordWrap(True)
         counts.setObjectName("muted")
         summary_layout.addWidget(counts)
+        if self.poster_job:
+            d = poster.describe(self.poster_job["spec"])
+            text = f"Final poster size: {d['size']}"
+            pr = self.poster_job["pricing"]
+            if pr["mode"] == "flat" and pr["fee"] > 0 and result.get("poster_fee") is None:
+                text += ". The flat fee applies when all sheets are printed; this is the calculated price."
+            size_note = QLabel(text)
+            size_note.setObjectName("muted")
+            size_note.setWordWrap(True)
+            summary_layout.addWidget(size_note)
 
-        ink_label = "Ink cost"
-        if result.get("black_mix"):
-            ink_label += " (rich black)"
-        if result["ink_multiplier"] != 1:
-            ink_label += f" (×{result['ink_multiplier']:g})"
-        self._row(summary_layout, ink_label, f"{result['ink_total']:.2f}")
-        self._row(summary_layout, "Paper cost", f"{result['paper_total']:.2f}")
-        self._row(summary_layout, "Subtotal", f"{result['subtotal']:.2f}")
+        if result.get("poster_fee") is not None:
+            self._row(summary_layout, result["poster_fee_label"], f"{result['poster_fee']:.2f}")
+            self._row(summary_layout, "Ink, paper and handling are included", "", muted=True)
+        else:
+            ink_label = "Ink cost"
+            if result.get("black_mix"):
+                ink_label += " (rich black)"
+            if result["ink_multiplier"] != 1:
+                ink_label += f" (×{result['ink_multiplier']:g})"
+            self._row(summary_layout, ink_label, f"{result['ink_total']:.2f}")
+            self._row(summary_layout, "Paper cost", f"{result['paper_total']:.2f}")
+            self._row(summary_layout, "Subtotal", f"{result['subtotal']:.2f}")
 
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        summary_layout.addWidget(line)
+            line = QFrame()
+            line.setFrameShape(QFrame.Shape.HLine)
+            summary_layout.addWidget(line)
 
-        for key, label in PCT_LABELS:
-            pct = result["percentages"].get(key, 0)
-            amt = result["category_amounts"].get(key, 0)
-            self._row(summary_layout, f"{label.replace(' %','')} ({pct:g}%)", f"{amt:.2f}", muted=True)
+            for key, label in PCT_LABELS:
+                pct = result["percentages"].get(key, 0)
+                amt = result["category_amounts"].get(key, 0)
+                self._row(summary_layout, f"{label.replace(' %','')} ({pct:g}%)", f"{amt:.2f}", muted=True)
 
-        if result["min_topup"] > 0:
-            self._row(summary_layout, "Minimum price top-up", f"{result['min_topup']:.2f}", muted=True)
+            if result["min_topup"] > 0:
+                self._row(summary_layout, "Minimum price top-up", f"{result['min_topup']:.2f}", muted=True)
 
-        if result.get("max_cut", 0) > 0:
-            self._row(summary_layout, "Max price cap", f"-{result['max_cut']:.2f}", muted=True)
+            if result.get("max_cut", 0) > 0:
+                self._row(summary_layout, "Max price cap", f"-{result['max_cut']:.2f}", muted=True)
 
         for label, amount in result["discount_lines"]:
             self._row(summary_layout, label, f"-{amount:.2f}", muted=True)
@@ -902,6 +1101,7 @@ class CalculateTab(QWidget):
             "pages": getattr(self, "print_pages", None),
             "page_count": self.page_count,
             "tin": (self.settings.get("tin") or None) if self.settings.get("has_permit") else None,
+            "poster": self._poster_receipt(),
             "result": result,
         }
 
@@ -922,4 +1122,5 @@ class CalculateTab(QWidget):
             job_name=job_name,
             pages=getattr(self, "print_pages", None),
             media=getattr(self, "print_media", ""),
+            actual_size=self.poster_job is not None,
         )

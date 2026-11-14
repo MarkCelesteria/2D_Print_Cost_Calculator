@@ -16,7 +16,7 @@ def _orientation(page):
     return QPageLayout.Orientation.Landscape if r.width > r.height else QPageLayout.Orientation.Portrait
 
 
-def _paint_document(printer, doc, grayscale, threshold=False, only_pages=None):
+def _paint_document(printer, doc, grayscale, threshold=False, only_pages=None, actual_size=False):
     """Draw every page; landscape pages get a landscape sheet, portrait pages a portrait one."""
     pages = list(range(len(doc)))
     if only_pages:
@@ -53,6 +53,16 @@ def _paint_document(printer, doc, grayscale, threshold=False, only_pages=None):
             img = QImage(samples, pix.width, pix.height, stride, fmt)
 
             page_rect = printer.pageRect(QPrinter.Unit.DevicePixel)
+            if actual_size:  # poster sheet: real size, centred on the paper, so the tiles join up
+                res = printer.resolution()
+                w_px, h_px = round(page.rect.width / 72 * res), round(page.rect.height / 72 * res)
+                scaled = img.scaled(w_px, h_px, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                    Qt.TransformationMode.SmoothTransformation)
+                paper_rect = printer.paperRect(QPrinter.Unit.DevicePixel)
+                x = paper_rect.x() - page_rect.x() + (paper_rect.width() - w_px) / 2
+                y = paper_rect.y() - page_rect.y() + (paper_rect.height() - h_px) / 2
+                painter.drawImage(int(x), int(y), scaled)
+                continue
             scaled = img.scaled(
                 int(page_rect.width()), int(page_rect.height()),
                 Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
@@ -67,7 +77,7 @@ def _paint_document(printer, doc, grayscale, threshold=False, only_pages=None):
 
 
 def print_pdf(pdf_path, parent=None, paper=None, color_mode="color", quality="standard",
-              job_name="Print Cost Calculator", pages=None, media=""):
+              job_name="Print Cost Calculator", pages=None, media="", actual_size=False):
     grayscale = color_mode != "color"
     notes = []
     if grayscale:
@@ -76,6 +86,8 @@ def print_pdf(pdf_path, parent=None, paper=None, color_mode="color", quality="st
         notes.append(("warn", f'Set paper type to "{media}" in Preferences.'))
     if quality in ("draft", "high"):
         notes.append(("warn", f"Set quality to {quality.title()} in Preferences."))
+    if actual_size:
+        notes.append(("warn", "Poster sheets print at 100%. In Preferences, turn off Fit to page / Scale to fit."))
     if pages:
         notes.append(("info", f"Only pages {format_page_ranges(pages)} print ({len(pages)}). "
                               "The window will still say All pages. Ignore it."))
@@ -100,7 +112,7 @@ def print_pdf(pdf_path, parent=None, paper=None, color_mode="color", quality="st
 
     def on_paint(p):
         try:
-            _paint_document(p, doc, grayscale, color_mode == "bw", pages)
+            _paint_document(p, doc, grayscale, color_mode == "bw", pages, actual_size)
         except Exception as e:
             notice(parent, "danger", "Print error", str(e))
 

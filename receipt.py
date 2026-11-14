@@ -81,6 +81,9 @@ def _draw(page, d):
     if d.get("customer_tin"):
         row("Customer TIN", d["customer_tin"])
     row("File", names[0] if len(names) == 1 else f"{len(names)} files")
+    if d.get("poster"):
+        row("Poster", f"{d['poster']['grid']} = {d['poster']['sheets']} sheets")
+        row("Poster size", d["poster"]["size"])
     row("Paper", d["paper"])
     row("Paper type", d.get("paper_type", "Plain paper"))
     row("Mode / Quality", f"{MODES.get(d['mode'], 'Color')} / {d['quality'].title()}")
@@ -128,17 +131,21 @@ def _draw(page, d):
     y -= 4
     rule()
 
-    row("Ink", f"{r['ink_total']:.2f}", label_color=INK)
-    row("Paper", f"{r['paper_total']:.2f}", label_color=INK)
-    row("Subtotal", f"{r['subtotal']:.2f}", font="hebo", label_color=INK)
-    y += 3
-    handling = sum(r["category_amounts"].values())
-    if handling > 0:
-        row("Service & production handling", f"{handling:.2f}")
-    if r["min_topup"] > 0:
-        row("Minimum price mark-up", f"{r['min_topup']:.2f}")
-    if max_cut > 0:
-        row("Max price cap", f"-{max_cut:.2f}")
+    if r.get("poster_fee") is not None:
+        row(r["poster_fee_label"], f"{r['poster_fee']:.2f}", font="hebo", label_color=INK)
+        y += 3
+    else:
+        row("Ink", f"{r['ink_total']:.2f}", label_color=INK)
+        row("Paper", f"{r['paper_total']:.2f}", label_color=INK)
+        row("Subtotal", f"{r['subtotal']:.2f}", font="hebo", label_color=INK)
+        y += 3
+        handling = sum(r["category_amounts"].values())
+        if handling > 0:
+            row("Service & production handling", f"{handling:.2f}")
+        if r["min_topup"] > 0:
+            row("Minimum price mark-up", f"{r['min_topup']:.2f}")
+        if max_cut > 0:
+            row("Max price cap", f"-{max_cut:.2f}")
     for label, amount in r.get("discount_lines", []):
         row(label, f"-{amount:.2f}")
     rule(dashed=False)
