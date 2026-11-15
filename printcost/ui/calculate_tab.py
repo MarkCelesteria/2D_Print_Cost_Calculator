@@ -24,6 +24,7 @@ from printcost.core import poster
 from printcost.core import layout as page_layout
 from printcost.ui.poster_dialog import PosterDialog
 from printcost.ui.layout_preview_dialog import SheetsPreviewDialog, BookPreviewDialog
+from printcost.ui.help import HelpButton, with_help
 from printcost.ui.notes import label_style, notice
 from printcost.ui.style import MAGENTA_DARK
 
@@ -261,13 +262,15 @@ class CalculateTab(QWidget):
         top.addWidget(self.per_page_combo, 3, 3)
 
         self.layout_label = QLabel("Print layout")
-        top.addWidget(self.layout_label, 4, 0)
+        top.addLayout(with_help(self.layout_label, "Normal prints every page on its own side. Back-to-back prints on both sides of each sheet. Booklet puts 2 pages on each side so the sheets can be folded and stapled into a small book."), 4, 0)
         self.layout_combo = QComboBox()
         self.layout_combo.addItems([page_layout.MODE_NAMES[m] for m in page_layout.MODES])
         top.addWidget(self.layout_combo, 4, 1)
         self.blank_covers_box = QCheckBox("Blank back on covers")
-        self.blank_covers_box.setToolTip("Keeps the back of the first page and the inside of the last page empty.")
-        top.addWidget(self.blank_covers_box, 4, 2, 1, 2)
+        self.blank_covers_box.setToolTip("Keeps the back of the first page empty. In a booklet, the inside of the last page too.")
+        blank_row = with_help(self.blank_covers_box, "Keeps the back of the first page empty, so the front cover is printed on one side only. In a booklet, the inside of the back cover stays empty too.")
+        self.blank_help = blank_row.help
+        top.addLayout(blank_row, 4, 2, 1, 2)
 
         self.duplex_frame = QFrame()
         self.duplex_frame.setObjectName("sub")
@@ -290,21 +293,25 @@ class CalculateTab(QWidget):
         self.test_btn = QPushButton("Alignment test")
         self.test_btn.setObjectName("secondary")
         self.test_btn.clicked.connect(self._print_alignment_test)
-        sub.addWidget(QLabel("Flip stack on"), 0, 0)
+        sub.addLayout(with_help(QLabel("Flip stack on"), "How you turn the printed stack over before the backs print. Epson printers with a rear tray use Long edge. If the backs come out upside down, switch it, or run the Alignment test."), 0, 0)
         sub.addWidget(self.flip_combo, 0, 1)
-        sub.addWidget(QLabel("Paper comes out"), 0, 2)
+        sub.addLayout(with_help(QLabel("Paper comes out"), "Print one page and look at where it lands. If you can see the print, choose Printed side up (Epson inkjets). If you see the blank back, choose Printed side down (most laser printers). This decides whether you flip the stack when reloading."), 0, 2)
         sub.addWidget(self.output_combo, 0, 3)
-        sub.addWidget(QLabel("Back order"), 1, 0)
+        sub.addLayout(with_help(QLabel("Back order"), "Automatic prints the backs in the right order for your printer. Pick Reversed only if the backs end up on the wrong sheets."), 1, 0)
         sub.addWidget(self.back_combo, 1, 1)
-        sub.addWidget(self.test_btn, 1, 2, 1, 2)
+        test_row = with_help(self.test_btn, "Prints 2 test sheets so you can check the backs once. The app then fixes the settings above and remembers them for this printer.")
+        sub.addLayout(test_row, 1, 2, 1, 2)
         self.connect_box = QCheckBox("No middle margin (the two pages touch at the fold)")
         self.connect_box.setToolTip("Booklet only. Removes the space at the fold so a picture can run across both pages.")
         self.connect_box.setVisible(False)
-        sub.addWidget(self.connect_box, 2, 0, 1, 4)
+        connect_row = with_help(self.connect_box, "Removes the blank space at the fold so a picture can run across both pages. Your pages need to be designed to reach the edge.")
+        self.connect_help = connect_row.help
+        self.connect_help.setVisible(False)
+        sub.addLayout(connect_row, 2, 0, 1, 4)
         sub.setColumnStretch(1, 1)
         sub.setColumnStretch(3, 1)
         top.addWidget(self.duplex_frame, 5, 0, 1, 4)
-        self._duplex_widgets = [self.blank_covers_box, self.duplex_frame]
+        self._duplex_widgets = [self.blank_covers_box, self.blank_help, self.duplex_frame]
         for w in self._duplex_widgets:
             w.setVisible(False)
         self._duplex_touched = False
@@ -785,6 +792,7 @@ class CalculateTab(QWidget):
         for w in self._duplex_widgets:
             w.setVisible(mode != "normal")
         self.connect_box.setVisible(mode == "booklet")
+        self.connect_help.setVisible(mode == "booklet")
 
     def _on_layout_changed(self):
         mode = self.layout_mode

@@ -11,6 +11,7 @@ from printcost.core import pricing
 from printcost.core import autostart
 from printcost.core import updater
 from printcost.ui.style import PRIMARY, TEXT, CARD_BG, BORDER, YELLOW, YELLOW_DARK, CmykBar
+from printcost.ui.help import with_help
 from printcost.ui.notes import notice
 
 QUALITY_LABELS = [("draft", "Draft"), ("standard", "Standard"), ("high", "High")]
@@ -544,19 +545,19 @@ class SettingsTab(QWidget):
         rules_layout.addWidget(self.color_threshold_input, 3, 3)
 
         duplex = self.settings["duplex"]
-        rules_layout.addWidget(QLabel("Double-sided extra / sheet"), 4, 0)
+        rules_layout.addLayout(with_help(QLabel("Double-sided extra / sheet"), "A flat amount added to the price of every sheet in a back-to-back or booklet job. Leave 0 for none."), 4, 0)
         self.duplex_extra_input = QLineEdit(str(duplex["extra_per_sheet"]))
         self.duplex_extra_input.setFixedWidth(80)
         self.duplex_extra_input.setToolTip("Added to every sheet of a back-to-back or booklet job. 0 for none.")
         rules_layout.addWidget(self.duplex_extra_input, 4, 1)
 
-        rules_layout.addWidget(QLabel("Double-sided paper discount %"), 4, 2)
+        rules_layout.addLayout(with_help(QLabel("Double-sided paper discount %"), "Percent taken off the paper price of every sheet in a back-to-back or booklet job, since one sheet covers 2 sides. Leave 0 for none."), 4, 2)
         self.duplex_discount_input = QLineEdit(str(duplex["discount_pct"]))
         self.duplex_discount_input.setFixedWidth(80)
         self.duplex_discount_input.setToolTip("Taken off the paper price of every sheet of a double-sided job. 0 for none.")
         rules_layout.addWidget(self.duplex_discount_input, 4, 3)
 
-        rules_layout.addWidget(QLabel("Booklet margin (in)"), 5, 0)
+        rules_layout.addLayout(with_help(QLabel("Booklet margin (in)"), "Blank space kept around the pages of a booklet. The printer itself cannot print right at the sheet edge."), 5, 0)
         self.duplex_margin_input = QLineEdit(str(duplex["margin_in"]))
         self.duplex_margin_input.setFixedWidth(80)
         self.duplex_margin_input.setToolTip("Space kept around each booklet page, including at the fold and staples.")

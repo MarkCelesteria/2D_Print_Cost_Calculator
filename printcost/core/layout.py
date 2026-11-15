@@ -20,11 +20,13 @@ def pad(pages, multiple):
     return pages + [None] * (-len(pages) % multiple)
 
 
-def arrange(n, multiple, blank_covers=False):
-    """Page indexes in order; None is a blank page. With blank_covers the back of the front cover and the
-    inside of the back cover stay empty, and the padding goes before the back cover."""
+def arrange(n, multiple, blank_covers=False, back_cover=True):
+    """Page indexes in order; None is a blank page. With blank_covers the back of the front cover stays empty.
+    With back_cover too, the inside of the back cover stays empty and the padding goes before it."""
     if not blank_covers or n < 2:
         return pad(list(range(n)), multiple)
+    if not back_cover:
+        return pad([0, None] + list(range(1, n)), multiple)
     head, tail = [0, None], [None, n - 1]
     middle = list(range(1, n - 1))
     middle += [None] * (-(len(head) + len(middle) + len(tail)) % multiple)
@@ -32,7 +34,7 @@ def arrange(n, multiple, blank_covers=False):
 
 
 def duplex_order(n, blank_covers=False):
-    return arrange(n, 2, blank_covers)
+    return arrange(n, 2, blank_covers, back_cover=False)
 
 
 def booklet_sides(n, blank_covers=False):

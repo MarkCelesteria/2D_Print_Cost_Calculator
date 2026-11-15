@@ -96,6 +96,19 @@ QLabel#badge {{
     font-size: 10px;
     font-weight: 700;
 }}
+QToolButton#help {{
+    background: {SOFT};
+    color: {PRIMARY_DARK};
+    border: 1px solid {PRIMARY};
+    border-radius: 9px;
+    font-size: 11px;
+    font-weight: 700;
+}}
+QToolButton#help:hover {{ background: {PRIMARY}; color: white; }}
+QFrame#helpPopup {{
+    background: white;
+    border: 1px solid {PRIMARY};
+}}
 QFrame#sub {{
     background: {SOFT};
     border: 1px solid #cdeef5;
