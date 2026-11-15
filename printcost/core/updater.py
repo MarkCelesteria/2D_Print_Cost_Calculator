@@ -10,7 +10,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 APP_VERSION = "1.7.0"
 REPO = "MarkCelesteria/2D_Print_Cost_Calculator"
-ASSET_NAME = "PrintCostCalculator.exe"
+ASSET_NAME = "PrintCostCalculator-Setup.exe"
 API_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 USER_AGENT = "PrintCostCalculator-updater"
 
@@ -69,30 +69,20 @@ def check_for_update(current=APP_VERSION):
     return info
 
 
-def _folder_writable(path):
-    try:
-        test = os.path.join(path, ".write_test")
-        open(test, "w").close()
-        os.remove(test)
-        return True
-    except OSError:
-        return False
-
-
 def can_self_update(info):
-    """Only the packaged Windows exe can replace itself, and only if its folder is writable."""
-    return (os.name == "nt" and getattr(sys, "frozen", False) and bool(info.get("asset_url"))
-            and _folder_writable(os.path.dirname(sys.executable)))
+    """Only the installed Windows app updates itself, by running the release's setup file."""
+    return os.name == "nt" and getattr(sys, "frozen", False) and bool(info.get("asset_url"))
 
 
 def download_update(info, dest_dir=None, progress_cb=None, is_cancelled=None):
-    """Download the new exe next to the current one (same drive, so the swap is instant). Returns its path."""
-    dest_dir = dest_dir or os.path.dirname(sys.executable)
-    dest = os.path.join(dest_dir, ASSET_NAME + ".new")
+    """Download the setup file into the temp folder. Returns its path."""
+    dest_dir = dest_dir or tempfile.gettempdir()
+    dest = os.path.join(dest_dir, ASSET_NAME)
+    part = dest + ".part"
     req = urllib.request.Request(info["asset_url"], headers={"User-Agent": USER_AGENT})
     sha, done = hashlib.sha256(), 0
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp, open(dest, "wb") as out:
+        with urllib.request.urlopen(req, timeout=30) as resp, open(part, "wb") as out:
             total = int(resp.headers.get("Content-Length") or info.get("asset_size") or 0)
             while True:
                 if is_cancelled and is_cancelled():
@@ -109,12 +99,13 @@ def download_update(info, dest_dir=None, progress_cb=None, is_cancelled=None):
             raise UpdateError("The download was incomplete. Please try again.")
         if info.get("sha256") and sha.hexdigest().lower() != info["sha256"].lower():
             raise UpdateError("The download didn't match GitHub's checksum, so it was discarded.")
-        with open(dest, "rb") as f:
+        with open(part, "rb") as f:
             if f.read(2) != b"MZ":
                 raise UpdateError("The download isn't a Windows program.")
+        os.replace(part, dest)
     except BaseException:
         try:
-            os.remove(dest)
+            os.remove(part)
         except OSError:
             pass
         raise
@@ -122,51 +113,28 @@ def download_update(info, dest_dir=None, progress_cb=None, is_cancelled=None):
 
 
 def _clean_env():
-    """The new exe must not think it is a child of this one (PyInstaller one-file quirk)."""
+    """The new exe must not think it is a child of this one (PyInstaller quirk)."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("_PYI") and k != "_MEIPASS2"}
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     return env
 
 
-def update_script(new_exe, target):
-    return "\r\n".join([
-        "@echo off",
-        "set tries=0",
-        ":retry",
-        "set /a tries+=1",
-        "if %tries% gtr 60 goto fail",
-        "timeout /t 1 /nobreak >nul",
-        f'move /y "{new_exe}" "{target}" >nul 2>&1',
-        "if errorlevel 1 goto retry",
-        f'start "" "{target}"',
-        "goto end",
-        ":fail",
-        f'del "{new_exe}" >nul 2>&1',
-        ":end",
-        '(goto) 2>nul & del "%~f0"',
-        "",
-    ])
-
-
-def apply_update(new_exe):
-    """Swap the new exe in once this app has exited, then start it. Call right before quitting."""
-    target = sys.executable
-    script = os.path.join(tempfile.gettempdir(), "printcost_update.bat")
-    with open(script, "w", newline="") as f:
-        f.write(update_script(new_exe, target))
+def apply_update(setup_path):
+    """Start the installer, which closes this app, upgrades it and starts it again. Call right before quitting."""
     subprocess.Popen(
-        ["cmd", "/c", script], env=_clean_env(), cwd=os.path.dirname(target), close_fds=True,
-        creationflags=0x08000000 | 0x00000008,
+        [setup_path, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+        env=_clean_env(), close_fds=True, creationflags=0x00000008 | 0x00000200,
     )
 
 
 def cleanup_leftovers():
-    """Remove a half-finished download from an update that was interrupted."""
+    """Remove a setup file or half-finished download from an earlier update."""
     if getattr(sys, "frozen", False):
-        try:
-            os.remove(os.path.join(os.path.dirname(sys.executable), ASSET_NAME + ".new"))
-        except OSError:
-            pass
+        for name in (ASSET_NAME, ASSET_NAME + ".part"):
+            try:
+                os.remove(os.path.join(tempfile.gettempdir(), name))
+            except OSError:
+                pass
 
 
 class CheckWorker(QThread):

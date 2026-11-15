@@ -1,3 +1,4 @@
+import os
 import sys
 import time
 
@@ -103,7 +104,7 @@ class MainWindow(QMainWindow):
         self.calc_tab.refresh_settings(self.settings)
 
     def _maybe_ask_autostart(self):
-        if self.settings.get("asked_about_autostart"):
+        if self.settings.get("asked_about_autostart") or autostart.is_autostart_enabled():
             return
         self.settings["asked_about_autostart"] = True
         pricing.save_settings(self.settings)
@@ -234,7 +235,7 @@ class MainWindow(QMainWindow):
 
     def _on_download_done(self, path):
         self._progress.close()
-        QMessageBox.information(self, "Update ready", "The update is downloaded. The app will restart now.")
+        QMessageBox.information(self, "Update ready", "The update is downloaded. The installer will run and the app will restart.")
         try:
             updater.apply_update(path)
         except Exception as e:
@@ -283,6 +284,11 @@ class MainWindow(QMainWindow):
         self.tray_icon.hide()
         QApplication.instance().quit()
 
+    def handle_second_launch(self, path):
+        self._show_from_tray()
+        if path:
+            self.calc_tab.load_file(path, auto_calculate=True)
+
     def closeEvent(self, event):
         event.ignore()
         self.hide()
@@ -300,7 +306,17 @@ def main():
     start_minimized = "--minimized" in args
     if start_minimized:
         args.remove("--minimized")
-    initial_file = args[0] if args else None
+    quit_running = "--quit" in args
+    if quit_running:
+        args.remove("--quit")
+    initial_file = os.path.abspath(args[0]) if args else None
+
+    from printcost.core import single_instance
+    if quit_running:
+        single_instance.request_quit()
+        return
+    if single_instance.hand_over(initial_file, quiet=start_minimized):
+        return
 
     splash = None
     if not start_minimized:
@@ -330,6 +346,10 @@ def main():
     cleanup_old_temp_dirs()
     step("Starting...")
     window = MainWindow(initial_file=initial_file, auto_calculate=bool(initial_file))
+    instance = single_instance.InstanceServer(app)
+    if instance.listen():
+        instance.activate.connect(window.handle_second_launch)
+        instance.quit_requested.connect(window._exit_app)
     if not start_minimized:
         window.show()
         splash.finish(window)
