@@ -98,7 +98,7 @@ def _draw(page, d):
     rule()
 
     # per-page color use (% of each ink) and price (ink + paper)
-    edges = [M + 78, M + 116, M + 154, M + 192, W - M]
+    edges = [M + 100, M + 134, M + 168, M + 202, W - M] if lay else [M + 78, M + 116, M + 154, M + 192, W - M]
 
     def cells(vals, font="helv", color=INK, size=8):
         nonlocal y
@@ -109,9 +109,17 @@ def _draw(page, d):
         y += size * 1.65
 
     per = r["per_page"]
-    if len(per) <= DETAIL_MAX:
+    if lay and (len(per) + 1) // 2 <= DETAIL_MAX:
+        center("Color use per sheet (%)", 9, "hebo", gap=1.7)
+        cells(["Sheet (pages)", "C", "M", "Y", "K", "Price"], "hebo", MUTED)
+        for i in range(0, len(per), 2):
+            group = per[i:i + 2]
+            label = _fit(f"{i // 2 + 1} ({format_page_ranges(lay['sheet_pages'][i // 2])})", 8, 76)
+            cells([label] + [f"{sum(p['coverage'][k] for p in group) * 100:.1f}" for k in "CMYK"]
+                  + [f"{sum(p['page_cost'] for p in group):.2f}"])
+    elif len(per) <= DETAIL_MAX:
         center("Color use per page (%)", 9, "hebo", gap=1.7)
-        cells(["Side" if lay else "Page", "C", "M", "Y", "K", "Price"], "hebo", MUTED)
+        cells(["Page", "C", "M", "Y", "K", "Price"], "hebo", MUTED)
         for p in per:
             c = p["coverage"]
             cells([str(p["page"])] + [f"{c[k] * 100:.1f}" for k in "CMYK"] + [f"{p['page_cost']:.2f}"])

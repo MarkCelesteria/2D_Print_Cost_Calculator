@@ -137,21 +137,22 @@ def print_pdf(pdf_path, parent=None, paper=None, color_mode="color", quality="st
 
 
 def print_duplex(pdf_path, parent=None, paper=None, color_mode="color", quality="standard",
-                 job_name="Print Cost Calculator", media="", flip="long", reverse=False, prefs_for=None):
+                 job_name="Print Cost Calculator", media="", prefs=None, prefs_for=None, finish_note=""):
     """Front sides, a prompt to put the stack back, then the back sides.
-    Returns {"printer", "flip", "reverse"} when both passes were sent, otherwise None."""
+    Returns {"printer", "prefs"} when both passes were sent, otherwise None."""
+    prefs = dict(prefs or page_layout.FLIP_DEFAULTS["duplex"])
     doc = fitz.open(pdf_path)
     total = len(doc)
     if total == 0:
         doc.close()
         return None
-    front = list(range(1, total + 1, 2))
-    back = list(range(2, total + 1, 2))
     grayscale = color_mode != "color"
 
+    front, back = page_layout.pass_orders(total, prefs["output"], prefs["reverse"])
     notes = _setting_notes(color_mode, media, quality)
-    notes.append(("info", f"First the {len(front)} front sides print. Then you put the stack back "
-                          f"and the {len(back)} back sides print."))
+    notes.append(("info", f"Step 1 prints the {len(front)} front sides. Step 2 prints the backs. "
+                          "Don't reorder the sheets in between. The finished stack comes out with "
+                          "page 1 on top."))
     notes.append(("warn", "Turn off the printer's own double-sided option in Preferences."))
     if notice(parent, "info", "Before you print", notes,
               QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
@@ -173,9 +174,10 @@ def print_duplex(pdf_path, parent=None, paper=None, color_mode="color", quality=
     name = printer.printerName()
     saved = prefs_for(name) if prefs_for else None
     if saved:
-        flip, reverse = saved
+        prefs = saved
+        front, back = page_layout.pass_orders(total, prefs["output"], prefs["reverse"])
     landscape = _orientation(doc[0]) == QPageLayout.Orientation.Landscape
-    rotate = page_layout.needs_rotation(flip, landscape)
+    rotate = page_layout.needs_rotation(prefs["flip"], landscape)
 
     try:
         if not _paint_document(printer, doc, grayscale, color_mode == "bw", front):
@@ -187,8 +189,14 @@ def print_duplex(pdf_path, parent=None, paper=None, color_mode="color", quality=
         doc.close()
         return None
 
-    lines = [("info", "Turn the printed stack over and put it back in the tray, in the same order. "
-                      "The back sides print on the blank side.")]
+    if prefs["output"] == "up":
+        lines = [("info", f"Take the whole stack without moving any sheet. Flip it over on the {prefs['flip']} edge "
+                          "and put it back in the tray, blank side up.")]
+    else:
+        lines = [("info", "Take the whole stack without moving any sheet and put it back in the tray "
+                          "as it is, blank side facing the way the printer prints.")]
+    if prefs["reverse"]:
+        lines.append(("info", "The backs print in reverse order (your printer setting)."))
     if saved:
         lines.append(("info", f"Using your saved settings for {name}."))
     if notice(parent, "info", "Put the printed stack back in the tray", lines,
@@ -199,10 +207,12 @@ def print_duplex(pdf_path, parent=None, paper=None, color_mode="color", quality=
 
     printer.setDocName(f"{job_name} (back sides)")
     try:
-        sent = _paint_document(printer, doc, grayscale, color_mode == "bw",
-                               back[::-1] if reverse else back, rotate=rotate)
+        sent = _paint_document(printer, doc, grayscale, color_mode == "bw", back, rotate=rotate)
     except Exception as e:
         notice(parent, "danger", "Print error", str(e))
         sent = False
     doc.close()
-    return {"printer": name, "flip": flip, "reverse": reverse} if sent else None
+    if sent:
+        text = ("Flip the whole finished stack over. " if prefs["output"] == "up" else "")
+        notice(parent, "info", "Finished", text + "The fronts face up with page 1 on top. " + finish_note)
+    return {"printer": name, "prefs": prefs} if sent else None

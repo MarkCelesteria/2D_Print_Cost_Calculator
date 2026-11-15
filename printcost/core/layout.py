@@ -10,7 +10,10 @@ from printcost.core.analyzer import AnalysisError, make_temp_dir
 MODES = ["normal", "duplex", "booklet"]
 MODE_NAMES = {"normal": "Normal", "duplex": "Back-to-back", "booklet": "Booklet"}
 BADGES = {"duplex": "Double-sided", "booklet": "Booklet"}
-FLIP_DEFAULTS = {"duplex": ("long", False), "booklet": ("short", False)}  # (flip edge, reverse back pass)
+FLIP_DEFAULTS = {
+    "duplex": {"flip": "long", "output": "up", "reverse": False},
+    "booklet": {"flip": "long", "output": "up", "reverse": False},
+}
 
 
 def pad(pages, multiple):
@@ -47,6 +50,16 @@ def sheet_count(sides):
     return (sides + 1) // 2
 
 
+def sheet_pages(n, mode, blank_covers=False):
+    """For every sheet, the original page numbers (1-based) printed on it, blanks left out."""
+    if mode == "duplex":
+        sides = [[p] for p in duplex_order(n, blank_covers)]
+    else:
+        sides = [list(s) for s in booklet_sides(n, blank_covers)]
+    return [sorted(p + 1 for side in sides[i:i + 2] for p in side if p is not None)
+            for i in range(0, len(sides), 2)]
+
+
 def needs_rotation(flip, landscape):
     """The back pass is turned 180 degrees when the stack is flipped over the page's top edge."""
     return (flip == "long") == landscape
@@ -55,24 +68,43 @@ def needs_rotation(flip, landscape):
 def printer_prefs(settings, printer, mode, saved_only=False):
     saved = settings.get("duplex", {}).get("printers", {}).get(printer, {}).get(mode)
     if saved:
-        return saved["flip"], saved["reverse"]
-    return None if saved_only else FLIP_DEFAULTS[mode]
+        return {**FLIP_DEFAULTS[mode], **saved}
+    return None if saved_only else dict(FLIP_DEFAULTS[mode])
 
 
-def save_printer_prefs(settings, printer, mode, flip, reverse):
-    entry = settings["duplex"].setdefault("printers", {}).setdefault(printer, {})
-    entry[mode] = {"flip": flip, "reverse": reverse}
+def save_printer_prefs(settings, printer, mode, prefs):
+    settings["duplex"].setdefault("printers", {}).setdefault(printer, {})[mode] = dict(prefs)
 
 
-def _show(page, rect, src, index):
-    if src[index].rotation:  # vector placement can't handle /Rotate safely
-        page.insert_image(rect, pixmap=src[index].get_pixmap(dpi=200, alpha=False))
+def pass_orders(total, output="up", opposite_back=False):
+    """1-based sides for the front pass and the back pass.
+    output "up": the printer drops sheets printed side up, so you flip the whole stack to reload it.
+    output "down": sheets come out printed side down, so the stack goes back as it is.
+    Either way the finished stack ends up front side up with page 1 on top."""
+    sheets = list(range(1, total + 1, 2))
+    back = sheets if output == "up" else sheets[::-1]
+    front = back if output == "up" else back[::-1]
+    if opposite_back:
+        back = back[::-1]
+    return [n for n in front], [n + 1 for n in back if n + 1 <= total]
+
+
+def _show(page, rect, src, index, align="center"):
+    sp = src[index]
+    scale = min(rect.width / sp.rect.width, rect.height / sp.rect.height)
+    w, h = sp.rect.width * scale, sp.rect.height * scale
+    x = rect.x0 + {"left": 0, "right": rect.width - w}.get(align, (rect.width - w) / 2)
+    y = rect.y0 + (rect.height - h) / 2
+    target = fitz.Rect(x, y, x + w, y + h)
+    if sp.rotation:  # vector placement can't handle /Rotate safely
+        page.insert_image(target, pixmap=sp.get_pixmap(dpi=200, alpha=False))
     else:
-        page.show_pdf_page(rect, src, index)
+        page.show_pdf_page(target, src, index)
 
 
-def build_layout_pdf(source_pdf, mode, paper, blank_covers=False, margin_in=0.25):
-    """Returns (pdf_path, number_of_sides). Sides are printed front, back, front, back..."""
+def build_layout_pdf(source_pdf, mode, paper, blank_covers=False, margin_in=0.25, connect=False):
+    """Returns (pdf_path, number_of_sides). Sides are printed front, back, front, back...
+    connect=True removes the middle margin of a booklet so the two pages touch at the fold."""
     if fitz is None:
         raise AnalysisError("PyMuPDF (fitz) is not installed. Run: pip install pymupdf")
     src = fitz.open(source_pdf)
@@ -91,11 +123,14 @@ def build_layout_pdf(source_pdf, mode, paper, blank_covers=False, margin_in=0.25
         else:
             short, long_ = sorted((paper["width_in"] * 72, paper["height_in"] * 72))
             w, h, m = long_, short, margin_in * 72
+            fold = 0 if connect else m
             for left, right in booklet_sides(n, blank_covers):
                 page = out.new_page(width=w, height=h)
-                for index, x in ((left, 0), (right, w / 2)):
+                cells = ((left, fitz.Rect(m, m, w / 2 - fold, h - m), "right" if connect else "center"),
+                         (right, fitz.Rect(w / 2 + fold, m, w - m, h - m), "left" if connect else "center"))
+                for index, rect, align in cells:
                     if index is not None:
-                        _show(page, fitz.Rect(x + m, m, x + w / 2 - m, h - m), src, index)
+                        _show(page, rect, src, index, align)
         path = os.path.join(make_temp_dir(), f"{mode}.pdf")
         out.save(path)
         return path, len(out)

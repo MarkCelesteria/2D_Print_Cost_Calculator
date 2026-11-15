@@ -23,6 +23,7 @@ from printcost.ui.receipt import ReceiptDialog
 from printcost.core import poster
 from printcost.core import layout as page_layout
 from printcost.ui.poster_dialog import PosterDialog
+from printcost.ui.layout_preview_dialog import SheetsPreviewDialog, BookPreviewDialog
 from printcost.ui.notes import label_style, notice
 from printcost.ui.style import MAGENTA_DARK
 
@@ -268,30 +269,51 @@ class CalculateTab(QWidget):
         self.blank_covers_box.setToolTip("Keeps the back of the first page and the inside of the last page empty.")
         top.addWidget(self.blank_covers_box, 4, 2, 1, 2)
 
-        flip_label = QLabel("Flip on")
+        self.duplex_frame = QFrame()
+        self.duplex_frame.setObjectName("sub")
+        sub = QGridLayout(self.duplex_frame)
+        sub.setContentsMargins(12, 10, 12, 10)
+        sub.setHorizontalSpacing(12)
+        sub.setVerticalSpacing(8)
         self.flip_combo = QComboBox()
         self.flip_combo.addItems(["Long edge", "Short edge"])
-        self.flip_combo.setToolTip("Pick the one where the back sides come out the right way up. "
-                                   "The alignment test finds it for you.")
-        self.reverse_box = QCheckBox("Reverse back pass")
-        self.reverse_box.setToolTip("Prints the back sides last page first. Some printers stack paper the other way round.")
+        self.flip_combo.setToolTip("How you turn the stack over. Pick the one where the backs come out the right "
+                                   "way up. The alignment test finds it for you.")
+        self.output_combo = QComboBox()
+        self.output_combo.addItems(["Printed side up", "Printed side down"])
+        self.output_combo.setToolTip("How your printer drops the sheets. Epson inkjets such as the L3210 drop them "
+                                     "printed side up. Most laser printers drop them printed side down.")
+        self.back_combo = QComboBox()
+        self.back_combo.addItems(["Automatic", "Reversed"])
+        self.back_combo.setToolTip("Automatic is right when you follow the prompts. Pick Reversed only if the "
+                                   "backs land on the wrong sheets.")
         self.test_btn = QPushButton("Alignment test")
         self.test_btn.setObjectName("secondary")
         self.test_btn.clicked.connect(self._print_alignment_test)
-        duplex_row = QHBoxLayout()
-        for w in (flip_label, self.flip_combo, self.reverse_box, self.test_btn):
-            duplex_row.addWidget(w)
-        duplex_row.addStretch()
-        top.addLayout(duplex_row, 5, 0, 1, 4)
-        self._duplex_widgets = [self.blank_covers_box, flip_label, self.flip_combo, self.reverse_box, self.test_btn]
+        sub.addWidget(QLabel("Flip stack on"), 0, 0)
+        sub.addWidget(self.flip_combo, 0, 1)
+        sub.addWidget(QLabel("Paper comes out"), 0, 2)
+        sub.addWidget(self.output_combo, 0, 3)
+        sub.addWidget(QLabel("Back order"), 1, 0)
+        sub.addWidget(self.back_combo, 1, 1)
+        sub.addWidget(self.test_btn, 1, 2, 1, 2)
+        self.connect_box = QCheckBox("No middle margin (the two pages touch at the fold)")
+        self.connect_box.setToolTip("Booklet only. Removes the space at the fold so a picture can run across both pages.")
+        self.connect_box.setVisible(False)
+        sub.addWidget(self.connect_box, 2, 0, 1, 4)
+        sub.setColumnStretch(1, 1)
+        sub.setColumnStretch(3, 1)
+        top.addWidget(self.duplex_frame, 5, 0, 1, 4)
+        self._duplex_widgets = [self.blank_covers_box, self.duplex_frame]
         for w in self._duplex_widgets:
             w.setVisible(False)
         self._duplex_touched = False
         self._duplex_printer = None
         self.layout_combo.currentIndexChanged.connect(self._on_layout_changed)
         self.blank_covers_box.toggled.connect(self._apply_layout)
-        self.flip_combo.currentIndexChanged.connect(self._duplex_edited)
-        self.reverse_box.toggled.connect(self._duplex_edited)
+        self.connect_box.toggled.connect(self._apply_layout)
+        for box in (self.flip_combo, self.output_combo, self.back_combo):
+            box.currentIndexChanged.connect(self._duplex_edited)
 
         self.paper_combo.currentIndexChanged.connect(self._reload_layout)
         self.paper_combo.currentIndexChanged.connect(self._on_paper_changed)
@@ -688,19 +710,32 @@ class CalculateTab(QWidget):
         if not self.resolved_pdf_path:
             QMessageBox.information(self, "No preview", "Load a PDF (or a .docx with LibreOffice) first.")
             return
+        if self.layout_mode != "normal":
+            self._open_layout_preview()
+            return
         dialog = FullPreviewDialog(self.resolved_pdf_path, self.page_count, parent=self,
                                    mode=self._current_mode(), included=self._selected_pages(),
                                    fit_paper=self._fit_paper(),
                                    original_path=self.original_pdf_path, doc_name=self._doc_name(),
                                    paper_sizes=self.settings["paper_sizes"])
-        if self.layout_mode != "normal":
-            dialog.can_edit = False
         dialog.exec()
         edited = dialog.edited_path()
         pages, included = dialog.page_count, dialog.included
         dialog.deleteLater()
         if edited:
             self._adopt_edited_pdf(edited, pages, included)
+
+    def _open_layout_preview(self):
+        count = get_pdf_page_count(self._layout_base)
+        blank = self.blank_covers_box.isChecked()
+        if self.layout_mode == "duplex":
+            dialog = SheetsPreviewDialog(self.resolved_pdf_path, page_layout.duplex_order(count, blank),
+                                         self._current_mode(), self._duplex_values()["flip"], self)
+        else:
+            dialog = BookPreviewDialog(self._layout_base, page_layout.arrange(count, 4, blank),
+                                       self._current_mode(), self)
+        dialog.exec()
+        dialog.deleteLater()
 
     def _doc_name(self):
         return os.path.splitext(os.path.basename(self.sources[0]))[0] if self.sources else "document"
@@ -749,6 +784,7 @@ class CalculateTab(QWidget):
         self.layout_combo.blockSignals(False)
         for w in self._duplex_widgets:
             w.setVisible(mode != "normal")
+        self.connect_box.setVisible(mode == "booklet")
 
     def _on_layout_changed(self):
         mode = self.layout_mode
@@ -759,20 +795,22 @@ class CalculateTab(QWidget):
 
     def _load_duplex_prefs(self):
         name = self._duplex_printer or QPrinterInfo.defaultPrinterName()
-        flip, reverse = page_layout.printer_prefs(self.settings, name, self.layout_mode)
-        self.flip_combo.blockSignals(True)
-        self.reverse_box.blockSignals(True)
-        self.flip_combo.setCurrentIndex(0 if flip == "long" else 1)
-        self.reverse_box.setChecked(reverse)
-        self.flip_combo.blockSignals(False)
-        self.reverse_box.blockSignals(False)
+        prefs = page_layout.printer_prefs(self.settings, name, self.layout_mode)
+        for box, index in ((self.flip_combo, 0 if prefs["flip"] == "long" else 1),
+                           (self.output_combo, 0 if prefs["output"] == "up" else 1),
+                           (self.back_combo, 1 if prefs["reverse"] else 0)):
+            box.blockSignals(True)
+            box.setCurrentIndex(index)
+            box.blockSignals(False)
         self._duplex_touched = False
 
     def _duplex_edited(self):
         self._duplex_touched = True
 
     def _duplex_values(self):
-        return ("long" if self.flip_combo.currentIndex() == 0 else "short"), self.reverse_box.isChecked()
+        return {"flip": "long" if self.flip_combo.currentIndex() == 0 else "short",
+                "output": "up" if self.output_combo.currentIndex() == 0 else "down",
+                "reverse": self.back_combo.currentIndex() == 1}
 
     def _prefs_for_printer(self, name):
         if self._duplex_touched:
@@ -781,8 +819,7 @@ class CalculateTab(QWidget):
 
     def _remember_duplex(self, result):
         self._duplex_printer = result["printer"]
-        page_layout.save_printer_prefs(self.settings, result["printer"], self.layout_mode,
-                                       result["flip"], result["reverse"])
+        page_layout.save_printer_prefs(self.settings, result["printer"], self.layout_mode, result["prefs"])
         pricing.save_settings(self.settings)
         self._load_duplex_prefs()
 
@@ -808,7 +845,8 @@ class CalculateTab(QWidget):
                 return
             try:
                 path, count = page_layout.build_layout_pdf(
-                    base, mode, paper, self.blank_covers_box.isChecked(), self.settings["duplex"]["margin_in"])
+                    base, mode, paper, self.blank_covers_box.isChecked(), self.settings["duplex"]["margin_in"],
+                    self.connect_box.isChecked())
             except Exception as e:
                 QMessageBox.warning(self, "Couldn't arrange the pages", str(e))
                 self._set_layout_mode("normal")
@@ -838,9 +876,8 @@ class CalculateTab(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "Couldn't make the test sheets", str(e))
             return
-        flip, reverse = self._duplex_values()
         result = print_duplex(pdf, parent=self, paper=paper, color_mode="bw", job_name="Alignment test",
-                              flip=flip, reverse=reverse)
+                              prefs=self._duplex_values())
         if not result:
             return
         box = QMessageBox(self)
@@ -856,12 +893,12 @@ class CalculateTab(QWidget):
         clicked = box.clickedButton()
         if clicked not in (right, upside, order, both):
             return
-        flip, reverse = result["flip"], result["reverse"]
+        prefs = dict(result["prefs"])
         if clicked in (upside, both):
-            flip = "short" if flip == "long" else "long"
+            prefs["flip"] = "short" if prefs["flip"] == "long" else "long"
         if clicked in (order, both):
-            reverse = not reverse
-        self._remember_duplex(dict(result, flip=flip, reverse=reverse))
+            prefs["reverse"] = not prefs["reverse"]
+        self._remember_duplex(dict(result, prefs=prefs))
         if clicked is not right:
             notice(self, "info", "Settings changed", "Saved for this printer. Run the test again to check it.")
 
@@ -974,8 +1011,9 @@ class CalculateTab(QWidget):
         mode = getattr(self, "print_layout", "normal")
         if mode == "normal" or self._layout_base is None:
             return None
-        return {"name": page_layout.BADGES[mode], "sheets": result["sheets"],
-                "pages": get_pdf_page_count(self._layout_base)}
+        count = get_pdf_page_count(self._layout_base)
+        return {"name": page_layout.BADGES[mode], "sheets": result["sheets"], "pages": count,
+                "sheet_pages": page_layout.sheet_pages(count, mode, self.blank_covers_box.isChecked())}
 
     def _calculate(self):
         if not self.file_path:
@@ -1336,13 +1374,13 @@ class CalculateTab(QWidget):
         names = [os.path.basename(p) for p in self.sources]
         job_name = names[0] if len(names) == 1 else f"{len(names)} files"
         if self.layout_mode != "normal":
-            flip, reverse = self._duplex_values()
             result = print_duplex(
                 self.resolved_pdf_path, parent=self, paper=getattr(self, "paper", None),
                 color_mode=getattr(self, "print_mode", "color"),
                 quality=getattr(self, "print_quality", "standard"),
                 job_name=job_name, media=getattr(self, "print_media", ""),
-                flip=flip, reverse=reverse, prefs_for=self._prefs_for_printer,
+                prefs=self._duplex_values(), prefs_for=self._prefs_for_printer,
+                finish_note="Fold the stack in half and staple the middle." if self.layout_mode == "booklet" else "",
             )
             if result:
                 self._remember_duplex(result)

@@ -89,10 +89,17 @@ QLabel#total {{
 QLabel#badge {{
     background: {MAGENTA_DARK};
     color: white;
-    border-radius: 8px;
-    padding: 1px 8px;
+    border-radius: 9px;
+    padding: 0px 10px;
+    min-height: 18px;
+    max-height: 18px;
     font-size: 10px;
     font-weight: 700;
+}}
+QFrame#sub {{
+    background: {SOFT};
+    border: 1px solid #cdeef5;
+    border-radius: 10px;
 }}
 
 /* ---------- tabs ---------- */
