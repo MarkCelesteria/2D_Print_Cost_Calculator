@@ -60,9 +60,10 @@ def make_splash():
 class MainWindow(QMainWindow):
     def __init__(self, initial_file=None, auto_calculate=False):
         super().__init__()
-        self.setWindowTitle(f"Print Cost Calculator v{updater.APP_VERSION}")
-        self.setMinimumSize(900, 860)
-        self.resize(940, 860)
+        self.setWindowTitle(f"Print Cost Calculator v{updater.APP_VERSION}"
+                            + ("" if getattr(sys, "frozen", False) else "  [DEV]"))
+        self.setMinimumSize(900, 920)
+        self.resize(940, 920)
 
         self.settings = pricing.load_settings()
 
@@ -254,7 +255,8 @@ class MainWindow(QMainWindow):
 
     def _setup_tray(self):
         self.tray_icon = QSystemTrayIcon(self.app_icon, self)
-        self.tray_icon.setToolTip("Print Cost Calculator")
+        self.tray_icon.setToolTip("Print Cost Calculator"
+                                  + ("" if getattr(sys, "frozen", False) else " [DEV]"))
 
         menu = QMenu()
         open_action = QAction("Open", self)

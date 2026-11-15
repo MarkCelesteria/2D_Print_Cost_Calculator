@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import sys
 import time
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -10,7 +11,7 @@ from PyQt6.QtWidgets import QMessageBox
 from printcost.core import updater
 
 _USER = re.sub(r"\W", "_", os.environ.get("USERNAME") or os.environ.get("USER") or "user")
-SERVER_NAME = f"PrintCostCalculator-{_USER}"
+SERVER_NAME = f"PrintCostCalculator-{_USER}" + ("" if getattr(sys, "frozen", False) else "-dev")
 TIMEOUT_MS = 1500
 
 

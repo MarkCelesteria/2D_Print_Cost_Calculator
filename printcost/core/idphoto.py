@@ -264,7 +264,11 @@ def cut_segments(spec, sheet):
 
 
 def best_plan(spec):
-    """(landscape, sheets) using the chosen orientation, or whichever needs fewer sheets when set to auto."""
+    """(landscape, sheets) using the chosen orientation, or whichever needs fewer sheets when set to auto.
+    A hand layout (spec["manual"]) is used instead while it still matches the paper and the photos."""
+    manual = manual_plan(spec)
+    if manual:
+        return manual
     mode = spec.get("orientation", "auto")
     options = [mode == "landscape"] if mode in ("portrait", "landscape") else [False, True]
     best = None
@@ -280,7 +284,7 @@ def best_plan(spec):
 def capacity(spec, index):
     """How many photos of entry `index` fit on one empty sheet (best orientation)."""
     e = spec["entries"][index]
-    probe = dict(spec, entries=[dict(e, qty=MAX_QTY)])
+    probe = dict(spec, entries=[dict(e, qty=MAX_QTY)], manual=None)
     try:
         landscape, sheets = best_plan(probe)
     except AnalysisError:
@@ -329,6 +333,142 @@ def describe(spec, sheets=None):
 def receipt_info(spec, sheets=None):
     d = describe(spec, sheets)
     return {"photos": d["photos"], "sheets": d["sheets"], "summary": d["summary"]}
+
+
+# ---------------- hand layout ----------------
+
+EPS = 1e-6
+
+
+def printable(spec, landscape):
+    """(left, top, right, bottom) of the area photos may use, in inches."""
+    sw, sh = sheet_size(spec["paper"], landscape)
+    m = spec["margin_in"]
+    return (m, m, sw - m, sh - m)
+
+
+def make_manual(spec, landscape, sheets):
+    """Store a layout (list of sheets of (x, y, w, h, entry_index)) so it can be kept in the spec."""
+    return {"paper": spec["paper"]["name"], "landscape": bool(landscape),
+            "sheets": [[tuple(it) for it in sheet] for sheet in sheets if sheet]}
+
+
+def manual_plan(spec):
+    """(landscape, sheets) of the hand layout, or None when there is none or it no longer fits
+    (other paper, other photos, or a photo outside the printable area)."""
+    man = spec.get("manual")
+    if not man or man.get("paper") != spec["paper"]["name"]:
+        return None
+    L, T, R, B = printable(spec, man["landscape"])
+    counts = [0] * len(spec["entries"])
+    sheets = []
+    for items in man["sheets"]:
+        sheet = Sheet()
+        for x, y, w, h, idx in items:
+            if idx >= len(counts) or x < L - 1e-6 or y < T - 1e-6 or x + w > R + 1e-6 or y + h > B + 1e-6:
+                return None
+            counts[idx] += 1
+            sheet.append((x, y, w, h, idx))
+        if sheet:
+            sheets.append(sheet)
+    if not sheets or counts != [e["qty"] for e in spec["entries"]]:
+        return None
+    return man["landscape"], sheets
+
+
+def too_close(a, b, gap):
+    """True when two photos (x, y, w, h) overlap or are closer than the gap."""
+    return (a[0] < b[0] + b[2] + gap - EPS and b[0] < a[0] + a[2] + gap - EPS and
+            a[1] < b[1] + b[3] + gap - EPS and b[1] < a[1] + a[3] + gap - EPS)
+
+
+def clamp_rect(x, y, w, h, bounds):
+    L, T, R, B = bounds
+    return min(max(L, x), max(L, R - w)), min(max(T, y), max(T, B - h))
+
+
+def resolve(items, moved, bounds, gap):
+    """items: list of [x, y, w, h, idx] with item `moved` already at the spot it should take.
+    Photos in its way are pushed aside (and push the ones behind them). Returns the new list, or None
+    when there is no room."""
+    items = [list(it) for it in items]
+    L, T, R, B = bounds
+    items[moved][0], items[moved][1] = clamp_rect(*items[moved][:4], bounds)
+    queue, steps = [moved], 0
+    while queue:
+        a = items[queue.pop(0)]
+        for j, b in enumerate(items):
+            if b is a or j == moved or not too_close(a[:4], b[:4], gap):
+                continue
+            steps += 1
+            if steps > 400:
+                return None
+            shifts = [("x", a[0] + a[2] + gap - b[0]), ("x", a[0] - gap - b[2] - b[0]),
+                      ("y", a[1] + a[3] + gap - b[1]), ("y", a[1] - gap - b[3] - b[1])]
+            for axis, d in sorted(shifts, key=lambda t: abs(t[1])):
+                nx, ny = (b[0] + d, b[1]) if axis == "x" else (b[0], b[1] + d)
+                if nx >= L - EPS and ny >= T - EPS and nx + b[2] <= R + EPS and ny + b[3] <= B + EPS:
+                    b[0], b[1] = nx, ny
+                    queue.append(j)
+                    break
+            else:
+                return None
+    for i, a in enumerate(items):
+        for b in items[i + 1:]:
+            if too_close(a[:4], b[:4], gap):
+                return None
+    return items
+
+
+def snap_move(rect, others, bounds, gap, thr):
+    """Snap a photo that is being moved. It only snaps to photos right next to it (never to far-away spots):
+    beside one it sits exactly one gap away, and it lines up with the neighbour's top/bottom or left/right
+    edge. The printable edges snap too. Returns (x, y, guides); guides = [("v", x, y0, y1) | ("h", y, x0, x1)]."""
+    x, y, w, h = rect
+    L, T, R, B = bounds
+    bx, by = [(abs(L - x), L, None), (abs(R - w - x), R - w, None)], [(abs(T - y), T, None), (abs(B - h - y), B - h, None)]
+    for o in others:
+        ox, oy, ow, oh = o[:4]
+        gx = max(ox - (x + w), x - (ox + ow))      # clear distance sideways (negative: shadows overlap)
+        gy = max(oy - (y + h), y - (oy + oh))
+        if (gx < -EPS and gy < -EPS) or max(gx, gy) > thr + gap:
+            continue                                # on top of it, or not next to it
+        side, stacked = gy < 0 <= gx, gx < 0 <= gy
+        corner = gx >= 0 and gy >= 0
+        if side or corner:
+            bx += [(abs(ox + ow + gap - x), ox + ow + gap, o), (abs(ox - gap - w - x), ox - gap - w, o)]
+        if stacked or corner:
+            by += [(abs(oy + oh + gap - y), oy + oh + gap, o), (abs(oy - gap - h - y), oy - gap - h, o)]
+        if side:
+            by += [(abs(oy - y), oy, o), (abs(oy + oh - h - y), oy + oh - h, o)]
+        if stacked:
+            bx += [(abs(ox - x), ox, o), (abs(ox + ow - w - x), ox + ow - w, o)]
+    bx = [c for c in bx if c[0] <= thr]
+    by = [c for c in by if c[0] <= thr]
+    nx = min(bx, key=lambda c: c[0])[1] if bx else x
+    ny = min(by, key=lambda c: c[0])[1] if by else y
+    guides = []
+    for _, v, o in ([min(bx, key=lambda c: c[0])] if bx else []):
+        if o is not None:
+            edge = nx if abs(v - nx) < EPS and (abs(nx - (o[0] + o[2] + gap)) < EPS or abs(nx - o[0]) < EPS) else nx + w
+            guides.append(("v", edge, min(ny, o[1]), max(ny + h, o[1] + o[3])))
+    for _, v, o in ([min(by, key=lambda c: c[0])] if by else []):
+        if o is not None:
+            edge = ny if abs(ny - (o[1] + o[3] + gap)) < EPS or abs(ny - o[1]) < EPS else ny + h
+            guides.append(("h", edge, min(nx, o[0]), max(nx + w, o[0] + o[2])))
+    return nx, ny, guides
+
+
+def find_spot(items, w, h, bounds, gap):
+    """First free place (top to bottom, left to right) for a new photo next to what is already there."""
+    L, T, R, B = bounds
+    xs = {L} | {it[0] for it in items} | {it[0] + it[2] + gap for it in items}
+    ys = {T} | {it[1] for it in items} | {it[1] + it[3] + gap for it in items}
+    for y in sorted(ys):
+        for x in sorted(xs):
+            if x + w <= R + EPS and y + h <= B + EPS and not any(too_close((x, y, w, h), it[:4], gap) for it in items):
+                return x, y
+    return None
 
 
 # ---------------- cropping ----------------

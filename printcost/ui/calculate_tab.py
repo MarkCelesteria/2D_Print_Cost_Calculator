@@ -201,7 +201,7 @@ class CalculateTab(QWidget):
         poster_btns = QHBoxLayout()
         self.edit_poster_btn = edit_poster = QPushButton("Edit poster")
         edit_poster.setObjectName("secondary")
-        edit_poster.clicked.connect(self._open_poster)
+        edit_poster.clicked.connect(self._edit_job)
         remove_poster = QPushButton("Remove")
         remove_poster.setObjectName("secondary")
         remove_poster.setToolTip("Go back to the normal document")
@@ -295,7 +295,7 @@ class CalculateTab(QWidget):
                                    "way up. The alignment test finds it for you.")
         self.output_combo = QComboBox()
         self.output_combo.addItems(["Printed side up", "Printed side down"])
-        self.output_combo.setToolTip("How your printer drops the sheets. Epson inkjets such as the L3210 drop them "
+        self.output_combo.setToolTip("How your printer drops the sheets. most inkjets printers drop them "
                                      "printed side up. Most laser printers drop them printed side down.")
         self.back_combo = QComboBox()
         self.back_combo.addItems(["Automatic", "Reversed"])
@@ -304,9 +304,9 @@ class CalculateTab(QWidget):
         self.test_btn = QPushButton("Alignment test")
         self.test_btn.setObjectName("secondary")
         self.test_btn.clicked.connect(self._print_alignment_test)
-        sub.addLayout(with_help(QLabel("Flip stack on"), "How you turn the printed stack over before the backs print. Epson printers with a rear tray use Long edge. If the backs come out upside down, switch it, or run the Alignment test."), 0, 0)
+        sub.addLayout(with_help(QLabel("Flip stack on"), "How you turn the printed stack over before the backs print. printers with a rear tray use Long edge. If the backs come out upside down, switch it, or run the Alignment test."), 0, 0)
         sub.addWidget(self.flip_combo, 0, 1)
-        sub.addLayout(with_help(QLabel("Paper comes out"), "Print one page and look at where it lands. If you can see the print, choose Printed side up (Epson inkjets). If you see the blank back, choose Printed side down (most laser printers). This decides whether you flip the stack when reloading."), 0, 2)
+        sub.addLayout(with_help(QLabel("Paper comes out"), "Print one page and look at where it lands. If you can see the print, choose Printed side up (Most inkjets printers). If you see the blank back, choose Printed side down (most laser printers). This decides whether you flip the stack when reloading."), 0, 2)
         sub.addWidget(self.output_combo, 0, 3)
         sub.addLayout(with_help(QLabel("Back order"), "Automatic prints the backs in the right order for your printer. Pick Reversed only if the backs end up on the wrong sheets."), 1, 0)
         sub.addWidget(self.back_combo, 1, 1)
@@ -949,6 +949,13 @@ class CalculateTab(QWidget):
         dialog.deleteLater()
         if accepted and result:
             self._adopt_poster(result["pdf"], result["job"], result["tile"])
+
+    def _edit_job(self):
+        """The Edit button: reopen whichever dialog made the current sheets."""
+        if self.poster_job and self.poster_job.get("kind") == "id":
+            self._open_id()
+        else:
+            self._open_poster()
 
     def _open_id(self):
         job = self.poster_job if self.poster_job and self.poster_job.get("kind") == "id" else None

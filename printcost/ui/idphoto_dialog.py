@@ -8,13 +8,14 @@ from PyQt6.QtGui import QPainter, QColor, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QGridLayout, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QSpinBox, QDoubleSpinBox,
     QCheckBox, QLineEdit, QPushButton, QFileDialog, QMessageBox, QWidget, QDialogButtonBox, QApplication,
-    QSizePolicy, QFrame, QScrollArea, QSlider, QInputDialog,
+    QSizePolicy, QFrame, QScrollArea, QSlider, QInputDialog, QTabWidget,
 )
 
 from printcost.core import idphoto
 from printcost.core import pricing
-from printcost.core.analyzer import IMAGE_EXTS, load_image_rgb
+from printcost.core.analyzer import IMAGE_EXTS, load_image_rgb, make_temp_dir
 from printcost.ui.icons import make_icon
+from printcost.ui.idphoto_editor import LayoutEditorDialog
 from printcost.ui.notes import label_style
 from printcost.ui.preview_widget import pil_to_qpixmap
 from printcost.ui.style import BORDER, MUTED, PREVIEW_BG, PRIMARY, MAGENTA
@@ -31,6 +32,39 @@ PICK_FILTER = "Pictures (" + " ".join(f"*{e}" for e in IMAGE_EXTS) + ")"
 THUMB_PX = 1600
 
 
+# ---------------- inputs that ignore the mouse wheel unless clicked into ----------------
+# (so scrolling the form never changes a margin, a quantity or a paper size by accident)
+
+class NoWheelSpin(QSpinBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event):
+        super().wheelEvent(event) if self.hasFocus() else event.ignore()
+
+
+class NoWheelDouble(QDoubleSpinBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event):
+        super().wheelEvent(event) if self.hasFocus() else event.ignore()
+
+
+class NoWheelCombo(QComboBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # size to a few characters, not to the longest item, so the form never gets wider than its column
+        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(6)
+
+    def wheelEvent(self, event):
+        super().wheelEvent(event) if self.hasFocus() else event.ignore()
+
+
 # ---------------- sheet preview ----------------
 
 class SheetPreview(QWidget):
@@ -38,7 +72,7 @@ class SheetPreview(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(380, 420)
+        self.setMinimumSize(300, 380)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._pix = None
 
@@ -220,22 +254,22 @@ class EntryRow(QFrame):
     remove_requested = pyqtSignal(object)
     max_requested = pyqtSignal(object)
 
-    def __init__(self, entry, unit_index):
+    def __init__(self, entry):
         super().__init__()
         self.setObjectName("sub")
-        self._unit = unit_index
+        self._unit = 0
         box = QVBoxLayout(self)
-        box.setContentsMargins(8, 6, 8, 6)
-        box.setSpacing(4)
+        box.setContentsMargins(10, 10, 10, 10)
+        box.setSpacing(8)
 
         top = QHBoxLayout()
         top.setSpacing(6)
-        self.combo = QComboBox()
+        self.combo = NoWheelCombo()
         self.combo.addItems([n for n, _ in idphoto.SIZES] + [idphoto.CUSTOM])
         top.addWidget(self.combo, 1)
-        self.qty = QSpinBox()
+        self.qty = NoWheelSpin()
         self.qty.setRange(1, idphoto.MAX_QTY)
-        self.qty.setSuffix(" pcs")
+        self.qty.setFixedWidth(70)
         self.qty.setToolTip("How many photos of this size")
         top.addWidget(self.qty)
         self.max_btn = QPushButton("Max")
@@ -262,34 +296,30 @@ class EntryRow(QFrame):
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(6)
         self.w_spin, self.h_spin = self._spin(), self._spin()
-        self.unit_label = QLabel(UNITS[unit_index][0])
-        cl.addWidget(QLabel("Size"))
+        self.unit_combo = NoWheelCombo()
+        self.unit_combo.addItems([u for u, _ in UNITS])
         cl.addWidget(self.w_spin, 1)
         cl.addWidget(QLabel("×"))
         cl.addWidget(self.h_spin, 1)
-        cl.addWidget(self.unit_label)
+        cl.addWidget(self.unit_combo)
         box.addWidget(self.custom)
 
-        self.sig_check = QCheckBox("Signature / name inside the photo (bottom)")
+        self.sig_check = QCheckBox("Signature / name inside the photo")
         self.sig_check.setToolTip("The photo keeps its exact size. The bottom part becomes a white strip for the\n"
                                   "signature and name, and the face is framed a little higher.")
         box.addWidget(self.sig_check)
 
         self.set_entry(entry)
         self.combo.currentIndexChanged.connect(self._combo_changed)
+        self.unit_combo.currentIndexChanged.connect(self._unit_changed)
         self.qty.valueChanged.connect(self.changed)
         self.w_spin.valueChanged.connect(self.changed)
         self.h_spin.valueChanged.connect(self.changed)
         self.sig_check.toggled.connect(self.changed)
 
-    def set_sig_enabled(self, on):
-        self.sig_check.setEnabled(on)
-        if not on:
-            self.sig_check.setChecked(False)
-
     @staticmethod
     def _spin():
-        sb = QDoubleSpinBox()
+        sb = NoWheelDouble()
         sb.setRange(0.1, 500)
         sb.setDecimals(2)
         sb.setSingleStep(0.1)
@@ -299,19 +329,14 @@ class EntryRow(QFrame):
         return UNITS[self._unit][1]
 
     def set_entry(self, e):
-        for w in (self.combo, self.qty, self.w_spin, self.h_spin):
+        for w in (self.combo, self.qty, self.w_spin, self.h_spin, self.sig_check):
             w.blockSignals(True)
-        if e["name"] in idphoto.SIZE_MAP:
-            self.combo.setCurrentText(e["name"])
-        else:
-            self.combo.setCurrentText(idphoto.CUSTOM)
+        self.combo.setCurrentText(e["name"] if e["name"] in idphoto.SIZE_MAP else idphoto.CUSTOM)
         self.w_spin.setValue(e["w"] / self._factor())
         self.h_spin.setValue(e["h"] / self._factor())
         self.qty.setValue(e["qty"])
-        self.sig_check.blockSignals(True)
         self.sig_check.setChecked(bool(e.get("sig")))
-        self.sig_check.blockSignals(False)
-        for w in (self.combo, self.qty, self.w_spin, self.h_spin):
+        for w in (self.combo, self.qty, self.w_spin, self.h_spin, self.sig_check):
             w.blockSignals(False)
         self.custom.setVisible(self.combo.currentText() == idphoto.CUSTOM)
 
@@ -328,11 +353,10 @@ class EntryRow(QFrame):
         self.custom.setVisible(name == idphoto.CUSTOM)
         self.changed.emit()
 
-    def set_unit(self, unit_index):
-        """Change the unit of the custom boxes without changing the size they hold."""
+    def _unit_changed(self, index):
+        """Another unit for the custom boxes: the size they hold stays the same."""
         w, h = self.w_spin.value() * self._factor(), self.h_spin.value() * self._factor()
-        self._unit = unit_index
-        self.unit_label.setText(UNITS[unit_index][0])
+        self._unit = index
         for sb, v in ((self.w_spin, w), (self.h_spin, h)):
             sb.blockSignals(True)
             sb.setValue(v / self._factor())
@@ -364,6 +388,9 @@ class IdPhotoDialog(QDialog):
         self.rows = []
         self.sig_img = None        # the signature (ink on white), or None
         self.sig_path = None
+        self.manual = (job or {}).get("spec", {}).get("manual")   # a layout arranged by hand, or None
+        self._manual_key = None
+        self._manual_dropped = False
         self.sheet_index = 0
         self._plan = None
         self._busy = True
@@ -375,59 +402,57 @@ class IdPhotoDialog(QDialog):
             remembered.update(job["spec"])
             remembered.update(pricing_mode=job["pricing"]["mode"], fee=job["pricing"]["fee"])
         self.focus = tuple(remembered.get("focus") or idphoto.DEFAULTS["focus"])
-        self.unit_index = 0
 
         root = QHBoxLayout(self)
         root.setSpacing(16)
         left = QVBoxLayout()
+        left.setSpacing(10)
         root.addLayout(left, 0)
         right = QVBoxLayout()
         root.addLayout(right, 1)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setMinimumWidth(430)
-        holder = QWidget()
-        form = QGridLayout(holder)
-        form.setContentsMargins(0, 0, 8, 0)
-        form.setHorizontalSpacing(10)
-        form.setVerticalSpacing(8)
-        scroll.setWidget(holder)
-        left.addWidget(scroll, 1)
+        form_scroll = QScrollArea()          # everything in one scrolling column
+        form_scroll.setWidgetResizable(True)
+        form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        form_scroll.setFixedWidth(390)
+        form_holder = QWidget()
+        body = QVBoxLayout(form_holder)
+        body.setContentsMargins(4, 4, 10, 4)
+        body.setSpacing(12)
+        form_scroll.setWidget(form_holder)
+        left.addWidget(form_scroll, 1)
 
-        row = 0
+        def page(title):
+            """A heading with a thin line, then a layout for that section's controls."""
+            head = QLabel(title)
+            head.setObjectName("cardHeader")
+            head.setContentsMargins(0, 18 if body.count() else 0, 0, 0)
+            body.addWidget(head)
+            line = QFrame()
+            line.setFrameShape(QFrame.Shape.HLine)
+            body.addWidget(line)
+            v = QVBoxLayout()
+            v.setSpacing(12)
+            body.addLayout(v)
+            return v
+
+        # ---- tab 1: photos ----
+        v = page("Photos")
+        src_row = QHBoxLayout()
         self.source_label = QLabel("")
         self.source_label.setWordWrap(True)
-        form.addWidget(self.source_label, row, 0, 1, 2)
         change = QPushButton("Change…")
         change.setObjectName("secondary")
         change.clicked.connect(self._change_source)
-        form.addWidget(change, row, 2)
-        row += 1
+        src_row.addWidget(self.source_label, 1)
+        src_row.addWidget(change)
+        v.addLayout(src_row)
 
-        form.addWidget(QLabel("Sheet paper"), row, 0)
-        self.paper_combo = QComboBox()
-        self.paper_combo.addItems([p["name"] for p in self.paper_sizes])
-        want = (job["spec"]["paper"]["name"] if job else (paper or {}).get("name"))
-        if want in [p["name"] for p in self.paper_sizes]:
-            self.paper_combo.setCurrentText(want)
-        form.addWidget(self.paper_combo, row, 1, 1, 2)
-        row += 1
-
-        form.addWidget(QLabel("Sheets"), row, 0)
-        self.orient_combo = QComboBox()
-        for text, key in ORIENTATIONS:
-            self.orient_combo.addItem(text, key)
-        self.orient_combo.setCurrentIndex(max(0, self.orient_combo.findData(remembered["orientation"])))
-        form.addWidget(self.orient_combo, row, 1, 1, 2)
-        row += 1
-
-        form.addWidget(QLabel("Quick set"), row, 0)
-        self.set_combo = QComboBox()
-        form.addWidget(self.set_combo, row, 1)
-        sets_btns = QHBoxLayout()
-        sets_btns.setSpacing(4)
+        set_row = QHBoxLayout()
+        set_row.setSpacing(6)
+        set_row.addWidget(QLabel("Quick set"))
+        self.set_combo = NoWheelCombo()
+        set_row.addWidget(self.set_combo, 1)
         self.save_set_btn = QPushButton("Save")
         self.save_set_btn.setObjectName("secondary")
         self.save_set_btn.setToolTip("Remember the sizes below as a quick set")
@@ -436,51 +461,56 @@ class IdPhotoDialog(QDialog):
         self.del_set_btn.setObjectName("secondary")
         self.del_set_btn.setToolTip("Delete one of your saved sets")
         self.del_set_btn.clicked.connect(self._delete_set)
-        sets_btns.addWidget(self.save_set_btn)
-        sets_btns.addWidget(self.del_set_btn)
-        form.addLayout(sets_btns, row, 2)
-        row += 1
+        set_row.addWidget(self.save_set_btn)
+        set_row.addWidget(self.del_set_btn)
+        v.addLayout(set_row)
 
-        header = QLabel("Photos (size and how many)")
-        header.setObjectName("cardHeader")
-        form.addWidget(header, row, 0, 1, 3)
-        row += 1
         self.rows_box = QVBoxLayout()
-        self.rows_box.setSpacing(6)
-        form.addLayout(self.rows_box, row, 0, 1, 3)
-        row += 1
-        add_row = QHBoxLayout()
+        self.rows_box.setSpacing(10)
+        v.addLayout(self.rows_box)
         self.add_btn = QPushButton("+ Add another size")
         self.add_btn.setObjectName("secondary")
         self.add_btn.clicked.connect(lambda: self._add_row())
-        add_row.addWidget(self.add_btn, 1)
-        add_row.addWidget(QLabel("Custom sizes in"))
-        self.unit_combo = QComboBox()
-        self.unit_combo.addItems([u for u, _ in UNITS])
-        add_row.addWidget(self.unit_combo)
-        form.addLayout(add_row, row, 0, 1, 3)
-        row += 1
+        v.addWidget(self.add_btn)
 
-        form.addWidget(QLabel("Gap between photos (in)"), row, 0, 1, 2)
+        # ---- tab 2: sheet ----
+        v = page("Sheet")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(12)
+        grid.setColumnMinimumWidth(0, 90)
+        grid.setColumnStretch(1, 1)
+        grid.addWidget(QLabel("Paper"), 0, 0)
+        self.paper_combo = NoWheelCombo()
+        self.paper_combo.addItems([p["name"] for p in self.paper_sizes])
+        want = (job["spec"]["paper"]["name"] if job else (paper or {}).get("name"))
+        if want in [p["name"] for p in self.paper_sizes]:
+            self.paper_combo.setCurrentText(want)
+        grid.addWidget(self.paper_combo, 0, 1)
+        grid.addWidget(QLabel("Sheets"), 1, 0)
+        self.orient_combo = NoWheelCombo()
+        for text, key in ORIENTATIONS:
+            self.orient_combo.addItem(text, key)
+        self.orient_combo.setCurrentIndex(max(0, self.orient_combo.findData(remembered["orientation"])))
+        grid.addWidget(self.orient_combo, 1, 1)
+        grid.addWidget(QLabel("Gap (in)"), 2, 0)
         self.gap_spin = self._inch_spin(remembered["gap_in"], 1.0)
         self.gap_spin.setToolTip("White space between photos, for cutting.")
-        form.addWidget(self.gap_spin, row, 2)
-        row += 1
-        form.addWidget(QLabel("Printer margin (in)"), row, 0, 1, 2)
+        grid.addWidget(self.gap_spin, 2, 1, Qt.AlignmentFlag.AlignLeft)
+        grid.addWidget(QLabel("Margin (in)"), 3, 0)
         self.margin_spin = self._inch_spin(remembered["margin_in"], 2.0)
         self.margin_spin.setToolTip("White border your printer can't print on.")
-        form.addWidget(self.margin_spin, row, 2)
-        row += 1
+        grid.addWidget(self.margin_spin, 3, 1, Qt.AlignmentFlag.AlignLeft)
+        v.addLayout(grid)
+
         self.lines_check = QCheckBox("Light cutting lines between photos")
         self.lines_check.setChecked(bool(remembered["lines"]))
-        form.addWidget(self.lines_check, row, 0, 1, 3)
-        row += 1
+        v.addWidget(self.lines_check)
         self.easy_check = QCheckBox("Easy cutting (straight cuts across the sheet)")
         self.easy_check.setToolTip("Lays photos in full-width bands so a paper cutter can make every cut edge to edge.\n"
                                    "With a gap of 0, small photos fill the exact space of a bigger one.")
         self.easy_check.setChecked(bool(remembered["easy"]))
-        form.addWidget(self.easy_check, row, 0, 1, 3)
-        row += 1
+        v.addWidget(self.easy_check)
 
         pos_row = QHBoxLayout()
         self.pos_btn = QPushButton("Position the face…")
@@ -492,17 +522,35 @@ class IdPhotoDialog(QDialog):
         self.pos_reset.clicked.connect(lambda: self._set_focus(idphoto.DEFAULTS["focus"]))
         pos_row.addWidget(self.pos_btn, 1)
         pos_row.addWidget(self.pos_reset)
-        form.addLayout(pos_row, row, 0, 1, 3)
-        row += 1
+        v.addLayout(pos_row)
 
+        hand_row = QHBoxLayout()
+        self.hand_btn = QPushButton("Arrange by hand…")
+        self.hand_btn.setObjectName("secondary")
+        self.hand_btn.setToolTip("Drag the photos where you want them. They can't overlap and snap to each other.")
+        self.hand_btn.clicked.connect(self._arrange_by_hand)
+        self.auto_btn = QPushButton("Automatic")
+        self.auto_btn.setObjectName("secondary")
+        self.auto_btn.setToolTip("Throw away the hand layout and arrange the photos automatically")
+        self.auto_btn.clicked.connect(self._auto_layout)
+        hand_row.addWidget(self.hand_btn, 1)
+        hand_row.addWidget(self.auto_btn)
+        v.addLayout(hand_row)
+        self.hand_label = QLabel("")
+        self.hand_label.setObjectName("muted")
+        self.hand_label.setWordWrap(True)
+        v.addWidget(self.hand_label)
+
+        # ---- tab 3: signature ----
+        v = page("Signature")
         sig_row = QHBoxLayout()
-        sig_row.addWidget(QLabel("Signature"))
+        sig_row.setSpacing(8)
         self.sig_thumb = QLabel("None")
         self.sig_thumb.setObjectName("sigThumb")
         self.sig_thumb.setStyleSheet(f"QLabel#sigThumb {{ background: white; border: 1px solid {BORDER}; "
                                      f"border-radius: 6px; color: {MUTED}; }}")
         self.sig_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.sig_thumb.setFixedSize(150, 44)
+        self.sig_thumb.setFixedSize(170, 56)
         sig_row.addWidget(self.sig_thumb)
         self.sig_btn = QPushButton("Import…")
         self.sig_btn.setObjectName("secondary")
@@ -514,58 +562,73 @@ class IdPhotoDialog(QDialog):
         sig_row.addWidget(self.sig_btn)
         sig_row.addWidget(self.sig_clear)
         sig_row.addStretch()
-        form.addLayout(sig_row, row, 0, 1, 3)
-        row += 1
-        form.addWidget(QLabel("Strip height (% of photo height)"), row, 0, 1, 2)
-        self.sig_pct_spin = QDoubleSpinBox()
+        v.addLayout(sig_row)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(12)
+        grid.setColumnMinimumWidth(0, 90)
+        grid.setColumnStretch(1, 1)
+        grid.addWidget(QLabel("Name"), 0, 0)
+        self.sig_name = QLineEdit()
+        self.sig_name.setPlaceholderText("Printed under the signature (optional)")
+        self.sig_name.setText(remembered.get("sig_name", ""))
+        grid.addWidget(self.sig_name, 0, 1)
+        grid.addWidget(QLabel("Strip height"), 1, 0)
+        strip = QHBoxLayout()
+        self.sig_pct_spin = NoWheelDouble()
         self.sig_pct_spin.setRange(8, 60)
         self.sig_pct_spin.setDecimals(0)
+        self.sig_pct_spin.setSuffix(" %")
         self.sig_pct_spin.setValue(float(remembered["sig_pct"]))
-        form.addWidget(self.sig_pct_spin, row, 2)
-        row += 1
-        form.addWidget(QLabel("Name (optional)"), row, 0)
-        self.sig_name = QLineEdit()
-        self.sig_name.setPlaceholderText("Printed under the signature")
-        self.sig_name.setText(remembered.get("sig_name", ""))
-        form.addWidget(self.sig_name, row, 1, 1, 2)
-        row += 1
-        sig_hint = QLabel("Tick “Signature / name inside the photo” on the sizes that need it. The photo keeps "
-                          "its exact size; the face is framed higher to leave room at the bottom.")
+        self.sig_pct_spin.setMaximumWidth(110)
+        self.sig_pct_spin.setToolTip("Height of the white strip, as a share of the photo height")
+        strip.addWidget(self.sig_pct_spin)
+        strip.addStretch()
+        grid.addLayout(strip, 1, 1)
+        v.addLayout(grid)
+        sig_hint = QLabel("Then tick “Signature / name inside the photo” on each size that needs it, in the "
+                          "Photos tab. The photo keeps its exact size; the face is framed higher.")
         sig_hint.setObjectName("muted")
         sig_hint.setWordWrap(True)
-        form.addWidget(sig_hint, row, 0, 1, 3)
-        row += 1
+        v.addWidget(sig_hint)
 
-        self.summary_label = QLabel("")
-        self.summary_label.setWordWrap(True)
-        self.summary_label.setStyleSheet("font-weight: 700;")
-        form.addWidget(self.summary_label, row, 0, 1, 3)
-        row += 1
-        self.note_label = QLabel("")
-        self.note_label.setWordWrap(True)
-        form.addWidget(self.note_label, row, 0, 1, 3)
-        row += 1
-
-        form.addWidget(QLabel("Pricing"), row, 0)
-        self.pricing_combo = QComboBox()
+        # ---- tab 4: price ----
+        v = page("Price")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(12)
+        grid.setColumnMinimumWidth(0, 90)
+        grid.setColumnStretch(1, 1)
+        grid.addWidget(QLabel("Pricing"), 0, 0)
+        self.pricing_combo = NoWheelCombo()
         for text, key in PRICING_MODES:
             self.pricing_combo.addItem(text, key)
         self.pricing_combo.setCurrentIndex(max(0, self.pricing_combo.findData(remembered["pricing_mode"])))
-        form.addWidget(self.pricing_combo, row, 1, 1, 2)
-        row += 1
+        grid.addWidget(self.pricing_combo, 0, 1)
         self.fee_label = QLabel("Price")
-        form.addWidget(self.fee_label, row, 0)
-        self.fee_spin = QDoubleSpinBox()
+        grid.addWidget(self.fee_label, 1, 0)
+        self.fee_spin = NoWheelDouble()
         self.fee_spin.setRange(0, 1_000_000)
         self.fee_spin.setDecimals(2)
         self.fee_spin.setValue(float(remembered["fee"] or 0))
-        form.addWidget(self.fee_spin, row, 1)
+        self.fee_spin.setMaximumWidth(130)
+        grid.addWidget(self.fee_spin, 1, 1, Qt.AlignmentFlag.AlignLeft)
+        v.addLayout(grid)
         self.fee_hint = QLabel("")
         self.fee_hint.setObjectName("muted")
         self.fee_hint.setWordWrap(True)
-        form.addWidget(self.fee_hint, row + 1, 0, 1, 3)
-        row += 2
-        form.setRowStretch(row, 1)
+        v.addWidget(self.fee_hint)
+
+        body.addStretch()
+
+        # ---- under the form: always visible ----
+        self.summary_label = QLabel("")
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setStyleSheet("font-weight: 700;")
+        left.addWidget(self.summary_label)
+        self.note_label = QLabel("")
+        self.note_label.setWordWrap(True)
+        left.addWidget(self.note_label)
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         self.create_btn = QPushButton("Create ID sheets")
@@ -594,11 +657,11 @@ class IdPhotoDialog(QDialog):
         right.addLayout(nav)
 
         self._fill_sets()
-        self._load_saved_signature()
+        self._load_job_signature(job)
         entries = remembered.get("entries") or idphoto.DEFAULTS["entries"]
         for e in entries[:idphoto.MAX_ROWS]:
             self._add_row(dict(e), refresh=False)
-        self.resize(1040, 760)
+        self.resize(780, 700)
 
         if not self._set_source(path):
             self.src = None
@@ -606,7 +669,6 @@ class IdPhotoDialog(QDialog):
 
         for w in (self.paper_combo, self.orient_combo, self.pricing_combo):
             w.currentIndexChanged.connect(self._refresh)
-        self.unit_combo.currentIndexChanged.connect(self._unit_changed)
         self.set_combo.activated.connect(self._set_chosen)
         for w in (self.gap_spin, self.margin_spin, self.fee_spin):
             w.valueChanged.connect(self._refresh)
@@ -614,6 +676,7 @@ class IdPhotoDialog(QDialog):
         self.easy_check.toggled.connect(self._refresh)
         self.sig_pct_spin.valueChanged.connect(self._refresh)
         self.sig_name.textChanged.connect(self._refresh)
+        self._manual_key = self._geom_key()
         self._busy = False
         self._refresh()
 
@@ -621,11 +684,12 @@ class IdPhotoDialog(QDialog):
 
     @staticmethod
     def _inch_spin(value, maximum):
-        sb = QDoubleSpinBox()
+        sb = NoWheelDouble()
         sb.setRange(0.0, maximum)
         sb.setDecimals(2)
         sb.setSingleStep(0.05)
         sb.setValue(float(value))
+        sb.setMaximumWidth(110)
         return sb
 
     def _paper(self):
@@ -645,6 +709,7 @@ class IdPhotoDialog(QDialog):
             "sig_name": self.sig_name.text().strip(),
             "signature_path": self.sig_path if uses_sig else None,
             "focus": self.focus,
+            "manual": self.manual,
             "paper": {"name": p["name"], "width_in": p["width_in"], "height_in": p["height_in"]},
         }
 
@@ -674,7 +739,7 @@ class IdPhotoDialog(QDialog):
             used = {r.entry()["name"] for r in self.rows}
             name = next((n for n, _ in idphoto.SIZES if n not in used), idphoto.SIZES[0][0])
             entry = idphoto.make_entry(name, 4)
-        row = EntryRow(entry, self.unit_index)
+        row = EntryRow(entry)
         row.changed.connect(self._refresh)
         row.remove_requested.connect(self._remove_row)
         row.max_requested.connect(self._max_row)
@@ -703,11 +768,6 @@ class IdPhotoDialog(QDialog):
         n = idphoto.capacity(spec, self.rows.index(row))
         if n:
             row.qty.setValue(min(n, idphoto.MAX_QTY))
-
-    def _unit_changed(self):
-        self.unit_index = self.unit_combo.currentIndex()
-        for r in self.rows:
-            r.set_unit(self.unit_index)
 
     def _replace_rows(self, entries):
         self._busy = True
@@ -768,12 +828,10 @@ class IdPhotoDialog(QDialog):
 
     # ---------------- signature ----------------
 
-    def _sig_file(self):
-        return os.path.join(os.path.dirname(pricing.SETTINGS_PATH), "signature.png")
-
-    def _load_saved_signature(self):
-        path = self._sig_file()
-        img = idphoto.load_signature(path) if os.path.exists(path) else None
+    def _load_job_signature(self, job):
+        """Only an ID sheet being edited brings its signature back; a new one starts without."""
+        path = ((job or {}).get("spec") or {}).get("signature_path")
+        img = idphoto.load_signature(path) if path and os.path.exists(path) else None
         self._set_signature(img, path if img is not None else None)
 
     def _set_signature(self, img, path):
@@ -793,7 +851,7 @@ class IdPhotoDialog(QDialog):
         try:
             with Image.open(path) as im:
                 sig = idphoto.prepare_signature(im)
-            saved = idphoto.save_signature(sig, self._sig_file())
+            saved = idphoto.save_signature(sig, os.path.join(make_temp_dir(), "signature.png"))
         except Exception as e:
             QMessageBox.warning(self, "Can't use this signature", str(e))
             return
@@ -801,10 +859,6 @@ class IdPhotoDialog(QDialog):
         self._refresh()
 
     def _clear_signature(self):
-        try:
-            os.remove(self._sig_file())
-        except OSError:
-            pass
         self._set_signature(None, None)
         self._refresh()
 
@@ -816,20 +870,22 @@ class IdPhotoDialog(QDialog):
             self._reset_options()
 
     def _reset_options(self):
-        """Back to the defaults (used when a different photo is chosen). Pricing is kept."""
-        d = idphoto.DEFAULTS
-        self._replace_rows(d["entries"])
+        """Back to the defaults (used when a different photo is chosen). Only the pricing is kept."""
+        dflt = idphoto.DEFAULTS
+        self._replace_rows(dflt["entries"])
         self._busy = True
         self.orient_combo.setCurrentIndex(0)
-        self.gap_spin.setValue(d["gap_in"])
-        self.margin_spin.setValue(d["margin_in"])
-        self.lines_check.setChecked(d["lines"])
-        self.easy_check.setChecked(d["easy"])
-        self.sig_pct_spin.setValue(d["sig_pct"])
+        self.gap_spin.setValue(dflt["gap_in"])
+        self.margin_spin.setValue(dflt["margin_in"])
+        self.lines_check.setChecked(dflt["lines"])
+        self.easy_check.setChecked(dflt["easy"])
+        self.sig_pct_spin.setValue(dflt["sig_pct"])
         self.sig_name.clear()
+        self.manual = None
+        self._set_signature(None, None)
         self.sheet_index = 0
         self._busy = False
-        self._set_focus(d["focus"])
+        self._set_focus(dflt["focus"])
 
     def _position(self):
         if self.img is None:
@@ -864,6 +920,12 @@ class IdPhotoDialog(QDialog):
         }[mode])
         self.pos_reset.setEnabled(tuple(self.focus) != tuple(idphoto.DEFAULTS["focus"]))
 
+        if self.manual is not None and self._geom_key() != self._manual_key:
+            self.manual = None            # the sizes, paper or spacing changed, so the hand layout no longer fits
+            self._manual_dropped = True
+        self.auto_btn.setVisible(self.manual is not None)
+        self.hand_label.setText("This sheet is arranged by hand." if self.manual is not None else "")
+
         spec = self._spec()
         err = idphoto.validate(spec)
         self.create_btn.setEnabled(err is None)
@@ -889,7 +951,10 @@ class IdPhotoDialog(QDialog):
         dpi = idphoto.effective_dpi(SimpleNamespace(width=self.full_size[0], height=self.full_size[1]), spec)
         if dpi is not None and dpi < idphoto.MIN_OK_DPI:
             notes.append(("warn", f"The picture is only about {dpi:.0f} dpi at this size, so it may look soft."))
-        if spec["easy"] and spec["gap_in"] > 0 and len(spec["entries"]) > 1:
+        if self._manual_dropped:
+            notes.append(("info", "The hand layout was cleared because the sizes or the sheet changed."))
+            self._manual_dropped = False
+        if spec["easy"] and spec["gap_in"] > 0 and len(spec["entries"]) > 1 and self.manual is None:
             notes.append(("info", "Tip: with a gap of 0, small photos fill the exact space of a bigger one "
                                   "(4 × 1×1 = one 2×2)."))
         if spec["margin_in"] == 0:
@@ -907,6 +972,52 @@ class IdPhotoDialog(QDialog):
                                  "(shown to scale)")
         self.prev_btn.setEnabled(self.sheet_index > 0)
         self.next_btn.setEnabled(self.sheet_index < n - 1)
+
+    # ---------------- arranging by hand ----------------
+
+    def _geom_key(self):
+        """Everything the placement depends on. When it changes, a hand layout is dropped."""
+        return (tuple((e["name"], round(e["w"], 4), round(e["h"], 4), e["qty"])
+                      for e in (r.entry() for r in self.rows)),
+                self.paper_combo.currentText(), self.orient_combo.currentData(),
+                round(self.gap_spin.value(), 3), round(self.margin_spin.value(), 3), self.easy_check.isChecked())
+
+    def _arrange_by_hand(self):
+        spec = self._spec()
+        err = idphoto.validate(spec)
+        if err:
+            QMessageBox.information(self, "Arrange by hand", err)
+            return
+        landscape, sheets = idphoto.best_plan(spec)
+        dlg = LayoutEditorDialog(self, self.img, spec, landscape, sheets, self.sig_img)
+        if dlg.exec() != dlg.DialogCode.Accepted or not dlg.result_layout:
+            return
+        landscape, new_sheets = dlg.result_layout
+        counts = [0] * len(spec["entries"])
+        for sheet in new_sheets:
+            for it in sheet:
+                counts[it[4]] += 1
+        remap = {old: new for new, old in enumerate(i for i, c in enumerate(counts) if c > 0)}
+
+        self._busy = True                  # the quantities now follow what is on the sheets
+        for i in reversed(range(len(self.rows))):
+            if i not in remap:
+                row = self.rows.pop(i)
+                self.rows_box.removeWidget(row)
+                row.deleteLater()
+        for old, new in remap.items():
+            self.rows[new].qty.setValue(counts[old])
+        self._update_row_buttons()
+        moved = [[(x, y, w, h, remap[idx]) for x, y, w, h, idx in sheet] for sheet in new_sheets]
+        self.manual = idphoto.make_manual(self._spec(), landscape, moved)
+        self._manual_key = self._geom_key()
+        self._busy = False
+        self.sheet_index = 0
+        self._refresh()
+
+    def _auto_layout(self):
+        self.manual = None
+        self._refresh()
 
     # ---------------- result ----------------
 

@@ -2,13 +2,14 @@ import json
 
 from PyQt6.QtWidgets import (
     QDialog, QScrollArea, QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
-    QStackedWidget, QProgressBar, QFileDialog, QMessageBox, QMenu, QApplication, QGridLayout, QComboBox
+    QStackedWidget, QProgressBar, QFileDialog, QMessageBox, QMenu, QApplication, QGridLayout, QComboBox,
+    QLineEdit, QAbstractSpinBox
 )
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QTimer, QEvent, QRectF, QPointF, QPoint, QSize, QEasingCurve, QVariantAnimation,
     QCoreApplication, QMimeData, QBuffer, QIODevice
 )
-from PyQt6.QtGui import QPainter, QColor, QFont, QPixmap, QPen, QPainterPath, QDrag, QCursor, QImage
+from PyQt6.QtGui import QPainter, QColor, QFont, QPixmap, QPen, QPainterPath, QDrag, QCursor, QImage, QShortcut, QKeySequence, QKeyEvent
 
 from printcost.core.analyzer import (
     render_pdf_page, apply_preview_mode, format_page_ranges, get_pdf_page_inches, fit_page_to_paper,
@@ -104,12 +105,15 @@ class PageLabel(QLabel):
     context_requested = pyqtSignal(int, int, object, object)
     drag_started = pyqtSignal()
     drag_finished = pyqtSignal()
+    group_moved = pyqtSignal(int, float, float)  # page, dx, dy as fractions of the page
 
     def __init__(self, index, provider, size_provider, text=""):
         super().__init__(text)
         self.index = index
         self.edit = False
         self.accept_files = False
+        self.group = set()   # every selected image; `sel` is the one clicked last
+        self._pending = None  # where a just-dropped edit will land, shown until the page is re-rendered
         self.sel = -1
         self._provider = provider
         self._size_provider = size_provider
@@ -123,6 +127,19 @@ class PageLabel(QLabel):
         self._guides_x, self._guides_y, self._match = [], [], []
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
+
+    @property
+    def sel(self):
+        return self._sel
+
+    @sel.setter
+    def sel(self, v):
+        self._sel = v
+        self.group = {v} if v >= 0 else set()
+
+    def setPixmap(self, pm):
+        self._pending = None
+        super().setPixmap(pm)
 
     # ---------------- items ----------------
 
@@ -173,7 +190,7 @@ class PageLabel(QLabel):
 
     def _hit(self, pos):
         items = self.items()
-        if 0 <= self.sel < len(items) and not items[self.sel]["locked"]:
+        if len(self.group) == 1 and 0 <= self.sel < len(items) and not items[self.sel]["locked"]:
             for name, pt in self._handles(self._px(items[self.sel]["rect"])).items():
                 if abs(pos.x() - pt.x()) <= HANDLE and abs(pos.y() - pt.y()) <= HANDLE:
                     return "handle", name
@@ -212,7 +229,7 @@ class PageLabel(QLabel):
         W, H = float(self.width()), float(self.height())
         xs, ys, ws, hs = [0.0, W / 2, W], [0.0, H / 2, H], [], []
         for i, it in enumerate(self.items()):
-            if i == self.sel:
+            if i in self.group:
                 continue
             r = self._px(it["rect"])
             xs += [r.left(), r.center().x(), r.right()]
@@ -334,15 +351,36 @@ class PageLabel(QLabel):
             return
         kind, v = self._hit(e.position())
         items = self.items()
+        mods = e.modifiers()
+        add = bool(mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier))
         if kind == "handle":
             orig = self._px(items[self.sel]["rect"])
             self._drag = {"mode": v, "start": e.position(), "orig": orig, "cur": QRectF(orig)}
         elif kind == "image" and not items[v]["locked"]:
-            self.sel = v
-            orig = self._px(items[v]["rect"])
-            self._drag = {"mode": "move", "start": e.position(), "orig": orig, "cur": QRectF(orig)}
-        else:
-            self.sel = -1
+            if add:  # Ctrl+click toggles, Shift+click adds
+                if v in self.group and mods & Qt.KeyboardModifier.ControlModifier:
+                    rest = self.group - {v}
+                    self.sel = max(rest) if rest else -1
+                    self.group = rest
+                else:
+                    g = self.group | {v}
+                    self.sel = v
+                    self.group = g
+            elif v in self.group and len(self.group) > 1:  # drag the whole selection
+                orig = self._px(items[min(self.group)]["rect"])
+                for i in self.group:
+                    orig = orig.united(self._px(items[i]["rect"]))
+                self._drag = {"mode": "move", "start": e.position(), "orig": orig, "cur": QRectF(orig),
+                              "group": True, "collapse": v}
+            else:
+                self.sel = v
+                orig = self._px(items[v]["rect"])
+                self._drag = {"mode": "move", "start": e.position(), "orig": orig, "cur": QRectF(orig)}
+        else:  # empty space: drag a selection box
+            base = set(self.group) if add else set()
+            if not add:
+                self.sel = -1
+            self._drag = {"mode": "band", "start": e.position(), "cur": QRectF(e.position(), e.position()), "base": base}
         self.selection_changed.emit()
         self.update()
 
@@ -374,8 +412,12 @@ class PageLabel(QLabel):
                 self.unsetCursor()
             return
         if d:
+            if d["mode"] == "band":
+                d["cur"] = QRectF(d["start"], pos).normalized()
+                self.update()
+                return
             if d["mode"] == "move":
-                if not self.rect().adjusted(-8, -8, 8, 8).contains(pos.toPoint()):
+                if not d.get("group") and not self.rect().adjusted(-8, -8, 8, 8).contains(pos.toPoint()):
                     self._start_external_drag()
                     return
                 r = QRectF(d["orig"])
@@ -418,14 +460,42 @@ class PageLabel(QLabel):
             if d.get("crop"):
                 self.update()
                 return
+            if d["mode"] == "band":
+                self._finish_band(d)
+                return
+            if d.get("group"):
+                dx, dy = d["cur"].x() - d["orig"].x(), d["cur"].y() - d["orig"].y()
+                if abs(dx) + abs(dy) >= 2:
+                    self._pending = {"delta": QPointF(dx, dy)}
+                    self.repaint()  # show it in the new place now, the save takes a moment
+                    self.group_moved.emit(self.index, dx / max(1, self.width()), dy / max(1, self.height()))
+                else:  # a plain click inside the selection picks just that image
+                    self.sel = d["collapse"]
+                    self.selection_changed.emit()
+                self.update()
+                return
             cur, orig = d["cur"], d["orig"]
             moved = (abs(cur.x() - orig.x()) + abs(cur.y() - orig.y())
                      + abs(cur.width() - orig.width()) + abs(cur.height() - orig.height()))
             if moved >= 2 and self.sel >= 0:
+                self._pending = {"rect": QRectF(cur)}
+                self.repaint()
                 self.changed.emit(self.index, self.sel, self._norm(cur))
             self.update()
             return
         super().mouseReleaseEvent(e)
+
+    def _finish_band(self, d):
+        r = d["cur"]
+        if r.width() >= 3 or r.height() >= 3:
+            hit = {i for i, it in enumerate(self.items())
+                   if not it["locked"] and r.intersects(self._px(it["rect"]))}
+            g = d["base"] | hit
+            if g:
+                self.sel = max(hit) if hit else max(g)
+                self.group = g
+        self.selection_changed.emit()
+        self.update()
 
     def leaveEvent(self, e):
         if self._hover != -1:
@@ -485,7 +555,7 @@ class PageLabel(QLabel):
         kind, v = self._hit(pos)
         items = self.items()
         idx = self.sel if kind == "handle" else (v if kind == "image" and not items[v]["locked"] else -1)
-        if idx != self.sel:
+        if idx != self.sel and idx not in self.group:
             self.sel = idx
             self.selection_changed.emit()
             self.update()
@@ -616,13 +686,36 @@ class PageLabel(QLabel):
                 p.end()
                 return
             p.setBrush(Qt.BrushStyle.NoBrush)
-            if 0 <= self._hover < len(items) and self._hover != self.sel:
+            if 0 <= self._hover < len(items) and self._hover not in self.group:
                 p.setPen(QPen(accent, 1.5, Qt.PenStyle.DashLine))
                 p.drawRect(self._px(items[self._hover]["rect"]))
-            if 0 <= self.sel < len(items):
+            if len(self.group) > 1:
+                d = self._drag
+                delta = QPointF(0, 0)
+                if d and d.get("group"):
+                    delta = d["cur"].topLeft() - d["orig"].topLeft()
+                elif self._pending and "delta" in self._pending:
+                    delta = self._pending["delta"]
+                pm = self.pixmap()
+                moving = not delta.isNull() and pm is not None and not pm.isNull()
+                for i in sorted(self.group):
+                    if i >= len(items):
+                        continue
+                    n = items[i]["rect"]
+                    r = self._px(n).translated(delta)
+                    if moving:
+                        src = QRectF(n.x() * pm.width(), n.y() * pm.height(),
+                                     n.width() * pm.width(), n.height() * pm.height())
+                        p.setOpacity(0.85)
+                        p.drawPixmap(r, pm, src)
+                        p.setOpacity(1.0)
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.setPen(QPen(QColor(MAGENTA), 2))
+                    p.drawRect(r)
+            elif 0 <= self.sel < len(items):
                 r = self._px(items[self.sel]["rect"])
-                if self._drag:  # ghost of the picture at its new place while dragging
-                    r = self._drag["cur"]
+                if self._drag or self._pending:  # the picture at its new place while dragging, and until it is saved
+                    r = self._drag["cur"] if self._drag else self._pending.get("rect", r)
                     pm = self.pixmap()
                     if pm is not None and not pm.isNull():
                         n = items[self.sel]["rect"]
@@ -637,6 +730,19 @@ class PageLabel(QLabel):
                 p.setPen(QPen(QColor(MAGENTA), 1.5))
                 for pt in self._handles(r).values():
                     p.drawRect(QRectF(pt.x() - 4, pt.y() - 4, 8, 8))
+            if self._drag and self._drag.get("mode") == "band":
+                band = self._drag["cur"]
+                for it in items:  # soft border on everything that can be picked, stronger on what the box touches
+                    if it["locked"]:
+                        continue
+                    ir = self._px(it["rect"])
+                    hit = band.intersects(ir)
+                    p.setPen(QPen(accent, 1.5) if hit else QPen(QColor(8, 145, 178, 130), 1, Qt.PenStyle.DotLine))
+                    p.setBrush(QColor(8, 145, 178, 45) if hit else Qt.BrushStyle.NoBrush)
+                    p.drawRect(ir)
+                p.setPen(QPen(accent, 1))
+                p.setBrush(QColor(8, 145, 178, 25))
+                p.drawRect(band)
             if self._drag:
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.setPen(QPen(QColor(ACCENT_LINE), 1, Qt.PenStyle.DashLine))
@@ -765,6 +871,7 @@ class FullPreviewDialog(QDialog):
         self._crop_label = None
         self._paste_ok = False
         self._paste_count = 0
+        self._setup_nudge_shortcuts()
         self._autoscroll = QTimer(self)
         self._autoscroll.setInterval(30)
         self._autoscroll.timeout.connect(self._autoscroll_tick)
@@ -1126,12 +1233,15 @@ class FullPreviewDialog(QDialog):
 
     def _update_edit_buttons(self):
         cropping = self._crop_label is not None
-        has_sel = self._selected_label() is not None
+        sel_lbl = self._selected_label()
+        has_sel = sel_lbl is not None
+        single = has_sel and len(sel_lbl.group) == 1
         ed = self.editor
         self.undo_btn.setEnabled(ed is not None and ed.can_undo and not cropping)
         self.redo_btn.setEnabled(ed is not None and ed.can_redo and not cropping)
-        for w in (self.delete_btn, self.crop_btn, self.position_btn, self.copy_btn):
-            w.setEnabled(has_sel and not cropping)
+        self.delete_btn.setEnabled(has_sel and not cropping)
+        for w in (self.crop_btn, self.position_btn, self.copy_btn):  # one image at a time
+            w.setEnabled(single and not cropping)
         self.paste_btn.setEnabled(self._paste_ok and not cropping)
         for w in (self.reset_btn, self.add_btn, self.pages_btn, self.paper_combo, self.orient_combo):
             w.setEnabled(not cropping)
@@ -1182,13 +1292,119 @@ class FullPreviewDialog(QDialog):
         rect = (nrect.x() * pw, nrect.y() * ph, nrect.right() * pw, nrect.bottom() * ph)
         self._edit_page(page, lambda: self.editor.move_resize(page, idx, item["xref"], rect))
 
+    # ---------------- editing the whole selection ----------------
+
+    def _group_edit(self, page, op, dx=0.0, dy=0.0):
+        """One edit (one save, one undo step) on every selected image: op = move/delete/duplicate/front/back."""
+        if self.editor is None:
+            return
+        lbl = self.page_labels[page]
+        pw, ph = self._page_size(page)
+        targets = [(it["xref"], (it["rect"].left() * pw, it["rect"].top() * ph,
+                                 it["rect"].right() * pw, it["rect"].bottom() * ph))
+                   for i, it in enumerate(lbl.items()) if i in lbl.group and not it["locked"]]
+        if not targets:
+            return
+        new = []
+        self._edit_page(page, lambda: new.extend(self.editor.edit_group(page, targets, op, dx, dy)))
+        if not new:
+            return
+        lbl = self.page_labels[page]
+        items = lbl.items()
+        pw, ph = self._page_pts.get(page, (pw, ph))
+        picked = []
+        for r in new:
+            cx, cy = (r[0] + r[2]) / 2 / pw, (r[1] + r[3]) / 2 / ph
+            free = [i for i in range(len(items)) if i not in picked]
+            if free:
+                picked.append(min(free, key=lambda i: abs(items[i]["rect"].center().x() - cx)
+                                  + abs(items[i]["rect"].center().y() - cy)))
+        if picked:
+            lbl.sel = picked[-1]
+            lbl.group = set(picked)
+            lbl.update()
+            self._update_edit_buttons()
+
     def _delete_selected(self):
         lbl = self._selected_label()
         if lbl is None:
             return
-        page, idx = lbl.index, lbl.sel
-        xref = lbl.items()[idx]["xref"]
-        self._edit_page(page, lambda: self.editor.delete_image(page, idx, xref))
+        self._group_edit(lbl.index, "delete")
+
+    def _duplicate(self):
+        lbl = self._selected_label()
+        if lbl is None:
+            return
+
+        self._group_edit(lbl.index, "duplicate")
+
+    def _select_all(self):
+        if not self.page_labels:
+            return
+        lbl = self.page_labels[self._current_page()]
+        ids = {i for i, it in enumerate(lbl.items()) if not it["locked"]}
+        for other in self.page_labels:
+            if other is not lbl and other.sel >= 0:
+                other.sel = -1
+                other.update()
+        if ids:
+            lbl.sel = max(ids)
+            lbl.group = ids
+        lbl.update()
+        self._update_edit_buttons()
+
+    def _cut(self):
+        lbl = self._selected_label()
+        if lbl is not None and len(lbl.group) == 1:
+            self._copy()
+            self._delete_selected()
+
+    def _layer(self, how):
+        lbl = self._selected_label()
+        if lbl is not None:
+            self._group_edit(lbl.index, how)
+
+    def _nudge(self, dx_px, dy_px):
+        """Move the selection by screen pixels."""
+        lbl = self._selected_label()
+        if lbl is None or not self.edit_mode or self._crop_label is not None:
+            return
+        pw, ph = self._page_size(lbl.index)
+        dx, dy = dx_px * pw / max(1, lbl.width()), dy_px * ph / max(1, lbl.height())
+        self._shift(lbl.index, dx, dy)
+
+    def _shift(self, page, dx, dy):
+        self._group_edit(page, "move", dx, dy)
+
+    def _on_group_moved(self, page, dxn, dyn):
+        pw, ph = self._page_size(page)
+        self._shift(page, dxn * pw, dyn * ph)
+
+    def _setup_nudge_shortcuts(self):
+        """Arrows move the selected image(s) by 1 px, Shift+arrows by 10 px (Ctrl+ works too).
+        With nothing selected they scroll as usual."""
+        keys = (("Left", Qt.Key.Key_Left, -1, 0), ("Right", Qt.Key.Key_Right, 1, 0),
+                ("Up", Qt.Key.Key_Up, 0, -1), ("Down", Qt.Key.Key_Down, 0, 1))
+        for name, key, dx, dy in keys:
+            for mod, mods, step in (("", Qt.KeyboardModifier.NoModifier, 1),
+                                    ("Shift+", Qt.KeyboardModifier.ShiftModifier, 10),
+                                    ("Ctrl+", Qt.KeyboardModifier.ControlModifier, 1),
+                                    ("Ctrl+Shift+", Qt.KeyboardModifier.ControlModifier
+                                     | Qt.KeyboardModifier.ShiftModifier, 10)):
+                sc = QShortcut(QKeySequence(mod + name), self)
+                sc.activated.connect(lambda k=key, dx=dx, dy=dy, m=mods, st=step: self._arrow(k, dx, dy, m, st))
+
+    def _arrow(self, key, dx, dy, mods, step):
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QAbstractSpinBox, QComboBox)):  # let a focused field keep its arrows
+            QApplication.sendEvent(fw, QKeyEvent(QEvent.Type.KeyPress, key, mods))
+            QApplication.sendEvent(fw, QKeyEvent(QEvent.Type.KeyRelease, key, mods))
+            return
+        if self.edit_mode and self._crop_label is None and self._selected_label() is not None:
+            self._nudge(dx * step, dy * step)
+            return
+        bar = self.scroll.horizontalScrollBar() if dx else self.scroll.verticalScrollBar()
+        bar.setValue(bar.value() + (dx or dy) * bar.singleStep() * (3 if mods & Qt.KeyboardModifier.ShiftModifier else 1))
 
     def _add_images(self, page, pics, point, offset=0):
         """pics = [(file path or picture bytes, size in points or None)]"""
@@ -1236,7 +1452,7 @@ class FullPreviewDialog(QDialog):
 
     def _copy(self):
         lbl = self._selected_label()
-        if lbl is None or self.editor is None:
+        if lbl is None or self.editor is None or len(lbl.group) != 1:
             return
         page, idx = lbl.index, lbl.sel
         try:
@@ -1306,8 +1522,13 @@ class FullPreviewDialog(QDialog):
             act.setEnabled(enabled)
             act.triggered.connect(lambda checked=False: slot())
 
-        if idx >= 0:
+        if idx >= 0 and len(self.page_labels[page].group) > 1:
+            add("copy", "Duplicate", self._duplicate)
+            menu.addSeparator()
+            add("trash", "Delete", self._delete_selected)
+        elif idx >= 0:
             add("copy", "Copy", self._copy)
+            add("copy", "Duplicate", self._duplicate)
             add("paste", "Paste", lambda: self._paste(page, point), self._paste_ok)
             menu.addSeparator()
             add("crop", "Crop", self._start_crop)
@@ -1346,7 +1567,7 @@ class FullPreviewDialog(QDialog):
 
     def _start_crop(self):
         lbl = self._selected_label()
-        if lbl is not None and lbl.start_crop():
+        if lbl is not None and len(lbl.group) == 1 and lbl.start_crop():
             self._crop_label = lbl
             self._update_edit_buttons()
 
@@ -1369,7 +1590,7 @@ class FullPreviewDialog(QDialog):
 
     def _arrange(self, how):
         lbl = self._selected_label()
-        if lbl is None:
+        if lbl is None or len(lbl.group) != 1:
             return
         page, idx = lbl.index, lbl.sel
         xref = lbl.items()[idx]["xref"]
@@ -1412,6 +1633,7 @@ class FullPreviewDialog(QDialog):
         lbl.changed.connect(self._on_changed)
         lbl.dropped.connect(self._on_dropped)
         lbl.selection_changed.connect(self._on_selection)
+        lbl.group_moved.connect(self._on_group_moved)
         lbl.image_dropped.connect(self._on_image_dropped)
         lbl.context_requested.connect(self._on_context)
         lbl.drag_started.connect(self._autoscroll.start)
@@ -1699,6 +1921,24 @@ class FullPreviewDialog(QDialog):
             self._copy()
         elif self.edit_mode and self._crop_label is None and ctrl and key == Qt.Key.Key_V:
             self._paste()
+        elif self.edit_mode and self._crop_label is None and ctrl and key == Qt.Key.Key_D:
+            self._duplicate()
+        elif self.edit_mode and self._crop_label is None and ctrl and key == Qt.Key.Key_A:
+            self._select_all()
+        elif self.edit_mode and self._crop_label is None and ctrl and key == Qt.Key.Key_X:
+            self._cut()
+        elif self.edit_mode and self._crop_label is None and ctrl and key == Qt.Key.Key_BracketRight:
+            self._layer("front")
+        elif self.edit_mode and self._crop_label is None and ctrl and key == Qt.Key.Key_BracketLeft:
+            self._layer("back")
+        elif self.edit_mode and self._crop_label is None and ctrl and key == Qt.Key.Key_O:
+            self._add_clicked()
+        elif ctrl and key == Qt.Key.Key_S and self._crop_label is None:
+            self._export()
+        elif ctrl and key == Qt.Key.Key_Home and self.page_labels:
+            self._scroll_to_page(0)
+        elif ctrl and key == Qt.Key.Key_End and self.page_labels:
+            self._scroll_to_page(len(self.page_labels) - 1)
         elif ctrl and key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
             self._zoom_by(ZOOM_STEP)
         elif ctrl and key == Qt.Key.Key_Minus:

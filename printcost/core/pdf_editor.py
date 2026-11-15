@@ -384,6 +384,63 @@ class PdfEditor:
             infos = self._target(page, image_idx, xref)
             self._remove(page, infos, image_idx)
 
+    def edit_group(self, index, targets, op, dx=0.0, dy=0.0):
+        """One edit (one save, one undo step) for several pictures on a page.
+        targets = [(xref, (x0, y0, x1, y1) in points)]; op = move / delete / duplicate / front / back.
+        Returns the new rects (points) of the pictures that were moved or created.
+        The page is read once and every target is lifted off in one pass: reading it again after each
+        step shows stale data and makes pictures reappear or vanish."""
+        out = []
+        with self._edit() as doc:
+            page = self._page(doc, index)
+            pr = page.rect
+            infos = self._infos(page)
+            chosen = []
+            for xref, rect in targets:  # match each target to a distinct placement
+                best = None
+                for k, i in enumerate(infos):
+                    if k in chosen or i["xref"] != xref or i["locked"]:
+                        continue
+                    dist = sum(abs(a - b) for a, b in zip(i["rect"], rect))
+                    if best is None or dist < best[0]:
+                        best = (dist, k)
+                if best is not None:
+                    chosen.append(best[1])
+            if chosen and op == "move":  # keep the whole group on the page
+                ux0 = min(infos[k]["rect"][0] for k in chosen)
+                uy0 = min(infos[k]["rect"][1] for k in chosen)
+                ux1 = max(infos[k]["rect"][2] for k in chosen)
+                uy1 = max(infos[k]["rect"][3] for k in chosen)
+                dx = min(max(dx, -ux0), pr.width - ux1)
+                dy = min(max(dy, -uy0), pr.height - uy1)
+            if chosen and op == "duplicate":
+                for k in chosen:
+                    r = fitz.Rect(infos[k]["rect"])
+                    new = self._clamp(fitz.Rect(r.x0 + 16, r.y0 + 16, r.x1 + 16, r.y1 + 16), page)
+                    page.insert_image(new, xref=infos[k]["xref"], keep_proportion=False, overlay=True)
+                    out.append(tuple(new))
+            elif chosen:
+                areas = []
+                for k in chosen:
+                    t = fitz.Rect(infos[k]["rect"])
+                    area = fitz.Rect(t.x0 + 0.5, t.y0 + 0.5, t.x1 - 0.5, t.y1 - 0.5)
+                    areas.append(area if not area.is_empty else t)
+                    page.add_redact_annot(areas[-1], fill=False)
+                others = [i for k, i in enumerate(infos)
+                          if k not in chosen and any(fitz.Rect(i["rect"]).intersects(a) for a in areas)]
+                page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE,
+                                      graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                                      text=fitz.PDF_REDACT_TEXT_NONE)
+                for o in others:  # redaction takes every picture it touches, so put the neighbours back
+                    page.insert_image(fitz.Rect(o["rect"]), xref=o["xref"], keep_proportion=False, overlay=False)
+                if op != "delete":
+                    for k in chosen:
+                        r = fitz.Rect(infos[k]["rect"])
+                        new = fitz.Rect(r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy) if op == "move" else r
+                        page.insert_image(new, xref=infos[k]["xref"], keep_proportion=False, overlay=(op != "back"))
+                        out.append(tuple(new))
+        return out
+
     def add_image(self, index, source, center=None, size=None):
         """Insert a picture (file path or bytes) around `center` (points). `size` = (w, h) in points, else
         about 40% of the page wide. Returns its rect."""
