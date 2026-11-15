@@ -180,6 +180,16 @@ def _poster(p, c, white):
     p.drawLine(QPointF(8, 32), QPointF(56, 32))
 
 
+def _id_photo(p, c, white):
+    _stroke(p, c, 5)
+    p.drawRoundedRect(QRectF(6, 12, 52, 40), 6, 6)               # the card
+    _fill(p, c)
+    p.drawEllipse(QRectF(14, 20, 14, 14))                       # head
+    p.drawPolygon(_poly((11, 46), (14, 38), (28, 38), (31, 46)))  # shoulders
+    for y, w in ((22, 15), (31, 15), (40, 10)):
+        p.drawRoundedRect(QRectF(36, y, w, 4), 2, 2)            # text lines
+
+
 def _check(p, c, white):
     _stroke(p, c, 9)
     p.drawPolyline(_poly((13, 34), (26, 47), (51, 18)))
@@ -194,7 +204,7 @@ def _close(p, c, white):
 _DRAW = {"printer": _printer, "receipt": _receipt, "tag": _tag, "undo": _undo, "redo": _redo, "reset": _reset,
          "image-add": _image_add, "trash": _trash, "crop": _crop, "position": _position, "pages": _pages,
          "copy": _copy, "paste": _paste, "page-setup": _page_setup, "check": _check, "close": _close,
-         "poster": _poster}
+         "poster": _poster, "id-photo": _id_photo}
 
 
 def make_icon(name, color=PRIMARY_DARK, detail="white"):

@@ -396,10 +396,17 @@ def apply_pricing(result, job, total_sheets):
     n = result["num_pages"]
     if fee <= 0 or n == 0:
         return
+    name = "ID photo price" if job.get("kind") == "id" else "Poster price"
     if mode == "per_sheet":
-        total, label = fee * n, f"Poster price ({n} × {fee:.2f})"
+        total, label = fee * n, f"{name} ({n} × {fee:.2f})"
+    elif mode == "per_photo":  # ID photos: only the photos on the sheets being printed are charged
+        counts = job.get("sheet_counts") or []
+        photos = sum(counts[p["page"] - 1] for p in result["per_page"] if 0 < p["page"] <= len(counts))
+        if photos == 0:
+            return
+        total, label = fee * photos, f"{name} ({photos} × {fee:.2f})"
     elif mode == "flat" and n == total_sheets:
-        total, label = fee, "Poster price (flat)"
+        total, label = fee, f"{name} (flat)"
     else:
         return
     for p in result["per_page"]:

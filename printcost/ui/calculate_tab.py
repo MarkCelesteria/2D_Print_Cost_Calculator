@@ -21,8 +21,10 @@ from printcost.ui.full_preview_dialog import FullPreviewDialog
 from printcost.ui.print_helper import print_pdf, print_duplex
 from printcost.ui.receipt import ReceiptDialog
 from printcost.core import poster
+from printcost.core import idphoto
 from printcost.core import layout as page_layout
 from printcost.ui.poster_dialog import PosterDialog
+from printcost.ui.idphoto_dialog import IdPhotoDialog
 from printcost.ui.layout_preview_dialog import SheetsPreviewDialog, BookPreviewDialog
 from printcost.ui.help import HelpButton, with_help
 from printcost.ui.notes import label_style, notice
@@ -139,12 +141,7 @@ class CalculateTab(QWidget):
         self.full_preview_btn.setEnabled(False)
         left_layout.addWidget(self.full_preview_btn)
 
-        browse_row = QHBoxLayout()
-        browse_btn = QPushButton("Browse files")
-        browse_btn.setObjectName("secondary")
-        browse_btn.setToolTip("PDF, Word or images")
-        browse_btn.clicked.connect(self._browse)
-        browse_row.addWidget(browse_btn, 1)
+        tools_row = QHBoxLayout()
         self.poster_btn = QPushButton("Poster")
         self.poster_btn.setObjectName("secondary")
         self.poster_btn.setIcon(make_icon("poster"))
@@ -152,8 +149,22 @@ class CalculateTab(QWidget):
         self.poster_btn.setToolTip("Slice one picture or PDF page into a grid of sheets.\n"
                                    "Uses the file already loaded, or asks you to pick one.")
         self.poster_btn.clicked.connect(self._open_poster)
-        browse_row.addWidget(self.poster_btn, 1)
-        left_layout.addLayout(browse_row)
+        tools_row.addWidget(self.poster_btn, 1)
+        self.id_btn = QPushButton("ID photos")
+        self.id_btn.setObjectName("secondary")
+        self.id_btn.setIcon(make_icon("id-photo"))
+        self.id_btn.setIconSize(QSize(18, 18))
+        self.id_btn.setToolTip("Print 1x1, 2x2, passport size and other ID photos, as many copies as you need.\n"
+                               "Uses the picture already loaded, or asks you to pick one.")
+        self.id_btn.clicked.connect(self._open_id)
+        tools_row.addWidget(self.id_btn, 1)
+        left_layout.addLayout(tools_row)
+
+        browse_btn = QPushButton("Browse files")
+        browse_btn.setObjectName("secondary")
+        browse_btn.setToolTip("PDF, Word or images")
+        browse_btn.clicked.connect(self._browse)
+        left_layout.addWidget(browse_btn)
 
         drop_hint = QLabel("or drag & drop files here")
         drop_hint.setObjectName("muted")
@@ -188,7 +199,7 @@ class CalculateTab(QWidget):
         tile_row.addWidget(self.tile_combo, 1)
         pb.addLayout(tile_row)
         poster_btns = QHBoxLayout()
-        edit_poster = QPushButton("Edit poster")
+        self.edit_poster_btn = edit_poster = QPushButton("Edit poster")
         edit_poster.setObjectName("secondary")
         edit_poster.clicked.connect(self._open_poster)
         remove_poster = QPushButton("Remove")
@@ -914,7 +925,10 @@ class CalculateTab(QWidget):
 
     def _open_poster(self):
         job = self.poster_job
-        path = job["source"] if job else None
+        if job and job.get("kind") == "id":  # an ID sheet is loaded: start a poster from the same picture
+            path, job = job["source"], None
+        else:
+            path = job["source"] if job else None
         if path is None and len(self.sources) == 1 and not self.sources[0].lower().endswith(".docx"):
             path = self.sources[0]
         if path is None:
@@ -927,6 +941,31 @@ class CalculateTab(QWidget):
             QMessageBox.warning(self, "No paper size", "Please add a paper size in Settings first.")
             return
         dialog = PosterDialog(self, path, self.settings, self._current_paper(), job=job)
+        if dialog.src is None:  # the file couldn't be opened (the dialog already said why)
+            dialog.deleteLater()
+            return
+        accepted = dialog.exec() == dialog.DialogCode.Accepted
+        result = dialog.result_data
+        dialog.deleteLater()
+        if accepted and result:
+            self._adopt_poster(result["pdf"], result["job"], result["tile"])
+
+    def _open_id(self):
+        job = self.poster_job if self.poster_job and self.poster_job.get("kind") == "id" else None
+        path = job["source"] if job else None
+        if path is None and self.poster_job and is_image(self.poster_job["source"]):
+            path = self.poster_job["source"]
+        if path is None and len(self.sources) == 1 and is_image(self.sources[0]):
+            path = self.sources[0]
+        if path is None:
+            exts = " ".join(f"*{e}" for e in IMAGE_EXTS)
+            path, _ = QFileDialog.getOpenFileName(self, "Choose a photo for the ID sheets", "", f"Pictures ({exts})")
+            if not path:
+                return
+        if self.paper_combo.count() == 0:
+            QMessageBox.warning(self, "No paper size", "Please add a paper size in Settings first.")
+            return
+        dialog = IdPhotoDialog(self, path, self.settings, self._current_paper(), job=job)
         if dialog.src is None:  # the file couldn't be opened (the dialog already said why)
             dialog.deleteLater()
             return
@@ -960,12 +999,13 @@ class CalculateTab(QWidget):
         self._on_document_loaded(pdf_path, count, first, False, load_id=self._load_id)
         self.pages_input.clear()
         self.file_label.setText(os.path.basename(job["source"]))
-        self._set_badges("Poster")
+        self._set_badges("ID photos" if job.get("kind") == "id" else "Poster")
         self._update_poster_box()
         if tile:
             self.current_page = min(tile, count - 1)
             self._show_current_page()
-        self.status_label.setText("Poster ready. Press Calculate for the price.")
+        self.status_label.setText(("ID sheets" if job.get("kind") == "id" else "Poster")
+                                  + " ready. Press Calculate for the price.")
 
     def _rebuild_poster(self):
         job = self.poster_job
@@ -975,14 +1015,19 @@ class CalculateTab(QWidget):
         spec = dict(job["spec"], paper={"name": paper["name"], "width_in": paper["width_in"],
                                         "height_in": paper["height_in"]})
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        extra = {}
         try:
-            pdf = poster.build_poster_pdf(job["source"], spec, job["page"])
+            if job.get("kind") == "id":
+                pdf, info = idphoto.build_pdf(job["source"], spec)
+                extra = {"photos": info["photos"], "sheet_counts": info["counts"]}
+            else:
+                pdf = poster.build_poster_pdf(job["source"], spec, job["page"])
         except Exception as e:
             QApplication.restoreOverrideCursor()
-            QMessageBox.warning(self, "Couldn't rebuild the poster", str(e))
+            QMessageBox.warning(self, "Couldn't rebuild the sheets", str(e))
             return
         QApplication.restoreOverrideCursor()
-        self._adopt_poster(pdf, dict(job, spec=spec), tile=self.current_page)
+        self._adopt_poster(pdf, dict(job, spec=spec, **extra), tile=self.current_page)
 
     def _remove_poster(self):
         sources = list(self.sources)
@@ -995,22 +1040,36 @@ class CalculateTab(QWidget):
         self.poster_box.setVisible(job is not None)
         if job is None:
             return
-        d = poster.describe(job["spec"])
-        self.poster_label.setText(f"Poster {d['grid']} of {d['paper']} · {d['sheets']} sheets · {d['size']}")
-        cols = job["spec"]["cols"]
+        is_id = job.get("kind") == "id"
+        self.edit_poster_btn.setText("Edit ID photos" if is_id else "Edit poster")
         self.tile_combo.blockSignals(True)
         self.tile_combo.clear()
         self.tile_combo.addItem("All sheets")
-        for i in range(d["sheets"]):
-            self.tile_combo.addItem(f"{poster.tile_label(i, cols)}  (sheet {i + 1})")
+        if is_id:
+            d = idphoto.describe(job["spec"])
+            self.poster_label.setText(f"ID photos · {d['summary']} · {d['sheets']} sheet(s) of {d['paper']}")
+            for i, n in enumerate(job["sheet_counts"]):
+                self.tile_combo.addItem(f"Sheet {i + 1}  ({n} photos)")
+        else:
+            d = poster.describe(job["spec"])
+            self.poster_label.setText(f"Poster {d['grid']} of {d['paper']} · {d['sheets']} sheets · {d['size']}")
+            cols = job["spec"]["cols"]
+            for i in range(d["sheets"]):
+                self.tile_combo.addItem(f"{poster.tile_label(i, cols)}  (sheet {i + 1})")
         self.tile_combo.blockSignals(False)
 
     def _on_tile_chosen(self, index):
         """One sheet = a one-page selection, so price, print and receipt follow the normal page logic."""
         self.pages_input.setText("" if index <= 0 else str(index))
 
+    def _id_receipt(self):
+        job = self.poster_job
+        if not job or job.get("kind") != "id":
+            return None
+        return idphoto.receipt_info(job["spec"])
+
     def _poster_receipt(self):
-        if not self.poster_job:
+        if not self.poster_job or self.poster_job.get("kind") == "id":
             return None
         d = poster.describe(self.poster_job["spec"])
         return {"grid": d["grid"], "sheets": d["sheets"], "size": d["size"]}
@@ -1174,7 +1233,9 @@ class CalculateTab(QWidget):
             QTimer.singleShot(800, cb)
         summary_card, summary_layout = card()
         header_row = QHBoxLayout()
-        if self.poster_job:
+        if self.poster_job and self.poster_job.get("kind") == "id":
+            header = QLabel(f"ID photos · {result['num_pages']} sheet(s) — {paper['name']}")
+        elif self.poster_job:
             d = poster.describe(self.poster_job["spec"])
             header = QLabel(f"Poster {d['grid']} · {result['num_pages']} sheet(s) — {paper['name']}")
         elif self.print_layout != "normal":
@@ -1195,8 +1256,12 @@ class CalculateTab(QWidget):
         counts.setObjectName("muted")
         summary_layout.addWidget(counts)
         if self.poster_job:
-            d = poster.describe(self.poster_job["spec"])
-            text = f"Final poster size: {d['size']}"
+            if self.poster_job.get("kind") == "id":
+                d = idphoto.describe(self.poster_job["spec"])
+                text = f"{d['photos']} photos: {d['summary']}"
+            else:
+                d = poster.describe(self.poster_job["spec"])
+                text = f"Final poster size: {d['size']}"
             pr = self.poster_job["pricing"]
             if pr["mode"] == "flat" and pr["fee"] > 0 and result.get("poster_fee") is None:
                 text += ". The flat fee applies when all sheets are printed; this is the calculated price."
@@ -1368,6 +1433,7 @@ class CalculateTab(QWidget):
             "page_count": self.page_count,
             "tin": (self.settings.get("tin") or None) if self.settings.get("has_permit") else None,
             "poster": self._poster_receipt(),
+            "idphoto": self._id_receipt(),
             "layout": self._layout_receipt(result),
             "result": result,
         }

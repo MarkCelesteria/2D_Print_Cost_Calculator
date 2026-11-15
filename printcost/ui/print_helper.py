@@ -105,7 +105,7 @@ def print_pdf(pdf_path, parent=None, paper=None, color_mode="color", quality="st
     grayscale = color_mode != "color"
     notes = _setting_notes(color_mode, media, quality)
     if actual_size:
-        notes.append(("warn", "Poster sheets print at 100%. In Preferences, turn off Fit to page / Scale to fit."))
+        notes.append(("warn", "These sheets print at 100% so the sizes stay exact. In Preferences, turn off Fit to page / Scale to fit."))
     if pages:
         notes.append(("info", f"Only pages {format_page_ranges(pages)} print ({len(pages)}). "
                               "The window will still say All pages. Ignore it."))

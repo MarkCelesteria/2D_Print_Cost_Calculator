@@ -84,6 +84,9 @@ def _draw(page, d):
     if d.get("poster"):
         row("Poster", f"{d['poster']['grid']} = {d['poster']['sheets']} sheets")
         row("Poster size", d["poster"]["size"])
+    if d.get("idphoto"):
+        row("ID photos", f"{d['idphoto']['photos']} pcs")
+        row("Sizes", d["idphoto"]["summary"])
     row("Paper", d["paper"])
     row("Paper type", d.get("paper_type", "Plain paper"))
     row("Mode / Quality", f"{MODES.get(d['mode'], 'Color')} / {d['quality'].title()}")
