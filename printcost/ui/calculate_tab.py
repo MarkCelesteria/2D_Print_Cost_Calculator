@@ -3,10 +3,11 @@ import os
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFrame, QComboBox, QLineEdit, QFileDialog, QMessageBox, QTableWidget,
-    QTableWidgetItem, QHeaderView, QScrollArea, QInputDialog, QDoubleSpinBox, QApplication
+    QTableWidgetItem, QHeaderView, QScrollArea, QInputDialog, QDoubleSpinBox, QApplication, QCheckBox
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QColor
+from PyQt6.QtPrintSupport import QPrinterInfo
 
 from printcost.core import pricing
 from printcost.ui.icons import make_icon
@@ -17,9 +18,10 @@ from printcost.core.analyzer import (render_pdf_page, apply_preview_mode, comput
                       get_pdf_page_inches, fit_page_to_paper, SUPPORTED_EXTS, IMAGE_EXTS, is_image,
                       get_pdf_page_count)
 from printcost.ui.full_preview_dialog import FullPreviewDialog
-from printcost.ui.print_helper import print_pdf
+from printcost.ui.print_helper import print_pdf, print_duplex
 from printcost.ui.receipt import ReceiptDialog
 from printcost.core import poster
+from printcost.core import layout as page_layout
 from printcost.ui.poster_dialog import PosterDialog
 from printcost.ui.notes import label_style, notice
 from printcost.ui.style import MAGENTA_DARK
@@ -257,6 +259,40 @@ class CalculateTab(QWidget):
         self.per_page_combo.addItems(["1", "2", "4"])
         top.addWidget(self.per_page_combo, 3, 3)
 
+        self.layout_label = QLabel("Print layout")
+        top.addWidget(self.layout_label, 4, 0)
+        self.layout_combo = QComboBox()
+        self.layout_combo.addItems([page_layout.MODE_NAMES[m] for m in page_layout.MODES])
+        top.addWidget(self.layout_combo, 4, 1)
+        self.blank_covers_box = QCheckBox("Blank back on covers")
+        self.blank_covers_box.setToolTip("Keeps the back of the first page and the inside of the last page empty.")
+        top.addWidget(self.blank_covers_box, 4, 2, 1, 2)
+
+        flip_label = QLabel("Flip on")
+        self.flip_combo = QComboBox()
+        self.flip_combo.addItems(["Long edge", "Short edge"])
+        self.flip_combo.setToolTip("Pick the one where the back sides come out the right way up. "
+                                   "The alignment test finds it for you.")
+        self.reverse_box = QCheckBox("Reverse back pass")
+        self.reverse_box.setToolTip("Prints the back sides last page first. Some printers stack paper the other way round.")
+        self.test_btn = QPushButton("Alignment test")
+        self.test_btn.setObjectName("secondary")
+        self.test_btn.clicked.connect(self._print_alignment_test)
+        duplex_row = QHBoxLayout()
+        for w in (flip_label, self.flip_combo, self.reverse_box, self.test_btn):
+            duplex_row.addWidget(w)
+        duplex_row.addStretch()
+        top.addLayout(duplex_row, 5, 0, 1, 4)
+        self._duplex_widgets = [self.blank_covers_box, flip_label, self.flip_combo, self.reverse_box, self.test_btn]
+        for w in self._duplex_widgets:
+            w.setVisible(False)
+        self._duplex_touched = False
+        self._duplex_printer = None
+        self.layout_combo.currentIndexChanged.connect(self._on_layout_changed)
+        self.blank_covers_box.toggled.connect(self._apply_layout)
+        self.flip_combo.currentIndexChanged.connect(self._duplex_edited)
+        self.reverse_box.toggled.connect(self._duplex_edited)
+
         self.paper_combo.currentIndexChanged.connect(self._reload_layout)
         self.paper_combo.currentIndexChanged.connect(self._on_paper_changed)
         self.fit_combo.currentIndexChanged.connect(self._reload_layout)
@@ -319,6 +355,7 @@ class CalculateTab(QWidget):
         self._loading = False
         self.resolved_pdf_path = None
         self.original_pdf_path = None
+        self._layout_base = None
         self.page_count = 1
         self.current_page = 0
         self.is_approx = False
@@ -419,7 +456,9 @@ class CalculateTab(QWidget):
             self._rebuild_poster()
         self._paper_auto_note = ""  # a manual choice: drop the "paper set to..." message
         self._update_paper_note()
-        if self.resolved_pdf_path:
+        if self.layout_mode == "booklet":
+            self._apply_layout()
+        elif self.resolved_pdf_path:
             self._show_current_page()
 
     def _update_paper_note(self):
@@ -449,6 +488,8 @@ class CalculateTab(QWidget):
 
     def _fit_paper(self):
         """The selected paper when the document doesn't match it (previews then show how it prints on it)."""
+        if self.layout_mode != "normal":
+            return None
         size = getattr(self, "doc_size", None)
         paper = self._current_paper() if self.paper_combo.count() else None
         if not size or paper is None:
@@ -506,6 +547,7 @@ class CalculateTab(QWidget):
         self._loading = False
         self.resolved_pdf_path = pdf_path
         self.original_pdf_path = pdf_path
+        self._layout_base = pdf_path
         if self.worker is None or not self.worker.isRunning():
             cleanup_temp_dirs(keep_path=pdf_path)
         self._detect_paper()
@@ -526,6 +568,8 @@ class CalculateTab(QWidget):
         self.next_btn.setEnabled(can_navigate)
         self.full_preview_btn.setEnabled(pdf_path is not None)
         self._update_input_states()
+        if pdf_path is not None and self.layout_mode != "normal" and not self.poster_job:
+            self._apply_layout()
 
         if auto_calculate:
             self._calculate()
@@ -534,8 +578,11 @@ class CalculateTab(QWidget):
         """Gray out the boxes that can't change anything for the current file."""
         loaded = bool(self.sources) and not self.poster_job
         images = sum(1 for p in self.sources if is_image(p))
-        pages_on = self.resolved_pdf_path is not None and self.page_count > 1
+        pages_on = self.resolved_pdf_path is not None and self.page_count > 1 and self.layout_mode == "normal"
+        can_layout = not self.poster_job and (not self.sources or getattr(self, "_layout_base", None) is not None)
         for box, label, on, tip in (
+            (self.layout_combo, self.layout_label, can_layout,
+             "Not available for posters, or when the file can't be turned into a PDF."),
             (self.fit_combo, self.fit_label, loaded and images > 0,
              "Only used for pictures. PDF and Word pages keep their own layout."),
             (self.per_page_combo, self.per_page_label, loaded and images > 1,
@@ -646,6 +693,8 @@ class CalculateTab(QWidget):
                                    fit_paper=self._fit_paper(),
                                    original_path=self.original_pdf_path, doc_name=self._doc_name(),
                                    paper_sizes=self.settings["paper_sizes"])
+        if self.layout_mode != "normal":
+            dialog.can_edit = False
         dialog.exec()
         edited = dialog.edited_path()
         pages, included = dialog.page_count, dialog.included
@@ -669,6 +718,7 @@ class CalculateTab(QWidget):
         except Exception:
             before = after = None
         self.resolved_pdf_path = path
+        self._layout_base = path
         self._analysis_cache = {}
         self.page_count = page_count
         self.current_page = min(self.current_page, page_count - 1)
@@ -686,6 +736,134 @@ class CalculateTab(QWidget):
         self._add_badge("Edited")
         self.status_label.setText("Document edited. Press Calculate to update the price.")
         self._show_current_page()
+
+    # ---------------- print layout ----------------
+
+    @property
+    def layout_mode(self):
+        return page_layout.MODES[self.layout_combo.currentIndex()]
+
+    def _set_layout_mode(self, mode):
+        self.layout_combo.blockSignals(True)
+        self.layout_combo.setCurrentIndex(page_layout.MODES.index(mode))
+        self.layout_combo.blockSignals(False)
+        for w in self._duplex_widgets:
+            w.setVisible(mode != "normal")
+
+    def _on_layout_changed(self):
+        mode = self.layout_mode
+        self._set_layout_mode(mode)
+        if mode != "normal":
+            self._load_duplex_prefs()
+        self._apply_layout()
+
+    def _load_duplex_prefs(self):
+        name = self._duplex_printer or QPrinterInfo.defaultPrinterName()
+        flip, reverse = page_layout.printer_prefs(self.settings, name, self.layout_mode)
+        self.flip_combo.blockSignals(True)
+        self.reverse_box.blockSignals(True)
+        self.flip_combo.setCurrentIndex(0 if flip == "long" else 1)
+        self.reverse_box.setChecked(reverse)
+        self.flip_combo.blockSignals(False)
+        self.reverse_box.blockSignals(False)
+        self._duplex_touched = False
+
+    def _duplex_edited(self):
+        self._duplex_touched = True
+
+    def _duplex_values(self):
+        return ("long" if self.flip_combo.currentIndex() == 0 else "short"), self.reverse_box.isChecked()
+
+    def _prefs_for_printer(self, name):
+        if self._duplex_touched:
+            return None
+        return page_layout.printer_prefs(self.settings, name, self.layout_mode, saved_only=True)
+
+    def _remember_duplex(self, result):
+        self._duplex_printer = result["printer"]
+        page_layout.save_printer_prefs(self.settings, result["printer"], self.layout_mode,
+                                       result["flip"], result["reverse"])
+        pricing.save_settings(self.settings)
+        self._load_duplex_prefs()
+
+    def _sheet_count(self):
+        return page_layout.sheet_count(self.page_count) if self.layout_mode != "normal" else None
+
+    def _sheet_price(self, price):
+        if self.layout_mode == "normal":
+            return price
+        duplex = self.settings["duplex"]
+        return price * (1 - duplex["discount_pct"] / 100) + duplex["extra_per_sheet"]
+
+    def _apply_layout(self):
+        base = getattr(self, "_layout_base", None)
+        if base is None or self.poster_job:
+            return
+        mode = self.layout_mode
+        if mode == "normal":
+            path, count = base, get_pdf_page_count(base)
+        else:
+            paper = self._current_paper()
+            if paper is None:
+                return
+            try:
+                path, count = page_layout.build_layout_pdf(
+                    base, mode, paper, self.blank_covers_box.isChecked(), self.settings["duplex"]["margin_in"])
+            except Exception as e:
+                QMessageBox.warning(self, "Couldn't arrange the pages", str(e))
+                self._set_layout_mode("normal")
+                self._apply_layout()
+                return
+        self.resolved_pdf_path = path
+        self.page_count = count
+        self.current_page = 0
+        self._analysis_cache = {}
+        self.manual_discount = None
+        self._clear_results()
+        self._update_input_states()
+        badges = [b for b in self._badges if b not in page_layout.BADGES.values()]
+        self._set_badges(*badges, *([page_layout.BADGES[mode]] if mode != "normal" else []))
+        self._show_current_page()
+        if mode != "normal":
+            self.status_label.setText(
+                f"{count} sides on {page_layout.sheet_count(count)} sheets. Press Calculate for the price.")
+
+    def _print_alignment_test(self):
+        paper = self._current_paper()
+        if paper is None:
+            QMessageBox.warning(self, "No paper size", "Please add a paper size in Settings first.")
+            return
+        try:
+            pdf = page_layout.build_test_pdf(paper, landscape=self.layout_mode == "booklet")
+        except Exception as e:
+            QMessageBox.warning(self, "Couldn't make the test sheets", str(e))
+            return
+        flip, reverse = self._duplex_values()
+        result = print_duplex(pdf, parent=self, paper=paper, color_mode="bw", job_name="Alignment test",
+                              flip=flip, reverse=reverse)
+        if not result:
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("How did the back sides come out?")
+        box.setText("Sheet 1 should read FRONT on one side and BACK on the other, both the right way up, "
+                    "and sheet 2 should be the next sheet.")
+        right = box.addButton("They look right", QMessageBox.ButtonRole.AcceptRole)
+        upside = box.addButton("The back is upside down", QMessageBox.ButtonRole.ActionRole)
+        order = box.addButton("The backs are on the wrong sheets", QMessageBox.ButtonRole.ActionRole)
+        both = box.addButton("Both are wrong", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked not in (right, upside, order, both):
+            return
+        flip, reverse = result["flip"], result["reverse"]
+        if clicked in (upside, both):
+            flip = "short" if flip == "long" else "long"
+        if clicked in (order, both):
+            reverse = not reverse
+        self._remember_duplex(dict(result, flip=flip, reverse=reverse))
+        if clicked is not right:
+            notice(self, "info", "Settings changed", "Saved for this printer. Run the test again to check it.")
 
     # ---------------- poster ----------------
 
@@ -721,6 +899,7 @@ class CalculateTab(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "Couldn't open the poster", str(e))
             return
+        self._set_layout_mode("normal")
         self.poster_job = job
         self.sources = [job["source"]]
         self.file_path = job["source"]
@@ -791,6 +970,13 @@ class CalculateTab(QWidget):
         d = poster.describe(self.poster_job["spec"])
         return {"grid": d["grid"], "sheets": d["sheets"], "size": d["size"]}
 
+    def _layout_receipt(self, result):
+        mode = getattr(self, "print_layout", "normal")
+        if mode == "normal" or self._layout_base is None:
+            return None
+        return {"name": page_layout.BADGES[mode], "sheets": result["sheets"],
+                "pages": get_pdf_page_count(self._layout_base)}
+
     def _calculate(self):
         if not self.file_path:
             QMessageBox.warning(self, "No file", "Please select a file first.")
@@ -827,6 +1013,8 @@ class CalculateTab(QWidget):
         self.paper = dict(size, price=size["price"] * ptype["price_factor"])  # sheet price = size x type factor
         self.print_paper_type = ptype["name"]
         self.print_media = ptype.get("driver", "")
+        self.print_layout = self.layout_mode
+        sheets, sheet_price = self._sheet_count(), self._sheet_price(self.paper["price"])
 
         self.manual_discount = None
         self._clear_results()
@@ -848,13 +1036,13 @@ class CalculateTab(QWidget):
             coverage, cached_approx = cached
             chosen = coverage if not selected_pages else [coverage[n - 1] for n in selected_pages]
             result = compute_cost(
-                chosen, self.settings["ink_prices"], self.paper["price"], percentages,
+                chosen, self.settings["ink_prices"], sheet_price, percentages,
                 page_numbers=selected_pages,
                 min_price_per_page=self.settings.get("min_price_per_page"),
                 min_price_color=self.settings.get("min_price_color"),
                 color_threshold_pct=self.settings.get("color_threshold_pct", 0.5),
                 black_mix=black_mix, ink_multiplier=ink_multiplier,
-                max_price_per_page=self.settings.get("max_price_per_page"),
+                max_price_per_page=self.settings.get("max_price_per_page"), sheets=sheets,
             )
             self.status_label.setText("Done (reused the earlier scan)." + (" (approximate estimate)" if cached_approx else ""))
             self._render_results(result, self.paper, cached_approx)
@@ -862,13 +1050,13 @@ class CalculateTab(QWidget):
 
         self.worker = AnalyzeWorker(
             self.resolved_pdf_path, self.file_path,
-            self.settings["ink_prices"], self.paper["price"], percentages, self.is_approx, mode,
+            self.settings["ink_prices"], sheet_price, percentages, self.is_approx, mode,
             min_price=self.settings.get("min_price_per_page"),
             ink_multiplier=ink_multiplier,
             min_price_color=self.settings.get("min_price_color"),
             color_threshold_pct=self.settings.get("color_threshold_pct", 0.5),
             pages=selected_pages, black_mix=black_mix,
-            max_price=self.settings.get("max_price_per_page"),
+            max_price=self.settings.get("max_price_per_page"), sheets=sheets,
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.succeeded.connect(self._on_success)
@@ -943,6 +1131,8 @@ class CalculateTab(QWidget):
         if self.poster_job:
             d = poster.describe(self.poster_job["spec"])
             header = QLabel(f"Poster {d['grid']} · {result['num_pages']} sheet(s) — {paper['name']}")
+        elif self.print_layout != "normal":
+            header = QLabel(f"{result['sheets']} sheet(s) · {self._layout_receipt(result)['pages']} pages — {paper['name']}")
         else:
             header = QLabel(f"{result['num_pages']} page(s) — {paper['name']}")
         header.setObjectName("cardHeader")
@@ -979,7 +1169,8 @@ class CalculateTab(QWidget):
             if result["ink_multiplier"] != 1:
                 ink_label += f" (×{result['ink_multiplier']:g})"
             self._row(summary_layout, ink_label, f"{result['ink_total']:.2f}")
-            self._row(summary_layout, "Paper cost", f"{result['paper_total']:.2f}")
+            paper_label = "Paper cost" if self.print_layout == "normal" else f"Paper cost ({result['sheets']} sheets)"
+            self._row(summary_layout, paper_label, f"{result['paper_total']:.2f}")
             self._row(summary_layout, "Subtotal", f"{result['subtotal']:.2f}")
 
             line = QFrame()
@@ -1131,6 +1322,7 @@ class CalculateTab(QWidget):
             "page_count": self.page_count,
             "tin": (self.settings.get("tin") or None) if self.settings.get("has_permit") else None,
             "poster": self._poster_receipt(),
+            "layout": self._layout_receipt(result),
             "result": result,
         }
 
@@ -1143,6 +1335,18 @@ class CalculateTab(QWidget):
             return
         names = [os.path.basename(p) for p in self.sources]
         job_name = names[0] if len(names) == 1 else f"{len(names)} files"
+        if self.layout_mode != "normal":
+            flip, reverse = self._duplex_values()
+            result = print_duplex(
+                self.resolved_pdf_path, parent=self, paper=getattr(self, "paper", None),
+                color_mode=getattr(self, "print_mode", "color"),
+                quality=getattr(self, "print_quality", "standard"),
+                job_name=job_name, media=getattr(self, "print_media", ""),
+                flip=flip, reverse=reverse, prefs_for=self._prefs_for_printer,
+            )
+            if result:
+                self._remember_duplex(result)
+            return
         print_pdf(
             self.resolved_pdf_path, parent=self,
             paper=getattr(self, "paper", None),

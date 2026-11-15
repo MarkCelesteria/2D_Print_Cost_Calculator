@@ -18,7 +18,7 @@ def label_style(level, size=11):
             f"padding: 4px 8px; font-size: {size}px;")
 
 
-def notice(parent, level, title, lines, buttons=QMessageBox.StandardButton.Ok):
+def notice(parent, level, title, lines, buttons=QMessageBox.StandardButton.Ok, ok_text=None):
     """lines: one string, or a list of (level, text). The box takes the highest level. Returns the clicked button."""
     if isinstance(lines, str):
         lines = [(level, lines)]
@@ -32,4 +32,6 @@ def notice(parent, level, title, lines, buttons=QMessageBox.StandardButton.Ok):
     box.setTextFormat(box.textFormat().RichText)
     box.setText(body)
     box.setStandardButtons(buttons)
+    if ok_text:
+        box.button(QMessageBox.StandardButton.Ok).setText(ok_text)
     return box.exec()

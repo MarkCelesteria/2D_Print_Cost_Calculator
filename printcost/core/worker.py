@@ -52,7 +52,7 @@ class AnalyzeWorker(QThread):
 
     def __init__(self, pdf_path, original_path, ink_prices, paper_price, percentages, is_approx, mode="color",
                  min_price=None, discount_pct=0.0, ink_multiplier=1.0, min_price_color=None,
-                 color_threshold_pct=0.5, pages=None, black_mix=0.0, max_price=None, parent=None):
+                 color_threshold_pct=0.5, pages=None, black_mix=0.0, max_price=None, sheets=None, parent=None):
         super().__init__(parent)
         self.pdf_path = pdf_path
         self.original_path = original_path
@@ -70,6 +70,7 @@ class AnalyzeWorker(QThread):
         self.pages = pages
         self.black_mix = black_mix
         self.max_price = max_price
+        self.sheets = sheets
 
     def cancel(self):
         self._abort = True
@@ -96,7 +97,8 @@ class AnalyzeWorker(QThread):
                                   ink_multiplier=self.ink_multiplier,
                                   min_price_color=self.min_price_color,
                                   color_threshold_pct=self.color_threshold_pct,
-                                  black_mix=self.black_mix, max_price_per_page=self.max_price)
+                                  black_mix=self.black_mix, max_price_per_page=self.max_price,
+                                  sheets=self.sheets)
             result["all_coverage"] = pages_coverage
             if self._abort:
                 raise _Cancelled()

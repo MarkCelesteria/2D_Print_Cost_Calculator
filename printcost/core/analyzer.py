@@ -180,12 +180,13 @@ def analyze_document(path: str, progress_cb=None):
 def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float, percentages: dict,
                  min_price_per_page=None, discount_pct: float = 0.0, ink_multiplier: float = 1.0,
                  min_price_color=None, color_threshold_pct: float = 0.5, page_numbers=None,
-                 black_mix: float = 0.0, max_price_per_page=None):
+                 black_mix: float = 0.0, max_price_per_page=None, sheets=None):
     per_page = []
     ink_total = 0.0
     min_required = 0.0
     calculated_total = 0.0
     pct_factor = 1.0 + sum(percentages.values()) / 100.0
+    paper_each = paper_price_per_sheet * sheets / len(pages_coverage) if sheets and pages_coverage else paper_price_per_sheet
 
     for idx, cov in enumerate(pages_coverage):
         boost = cov["K"] * black_mix
@@ -195,7 +196,7 @@ def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float,
         is_color = cov.get("color_frac", 0.0) * 100.0 >= color_threshold_pct
         floor = min_price_color if (is_color and min_price_color) else min_price_per_page
 
-        page_total = (page_ink_cost + paper_price_per_sheet) * pct_factor
+        page_total = (page_ink_cost + paper_each) * pct_factor
 
         ink_total += page_ink_cost
         calculated_total += page_total
@@ -209,7 +210,7 @@ def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float,
     min_topup = max(0.0, min_required - calculated_total)
 
     num_pages = len(pages_coverage)
-    paper_total = paper_price_per_sheet * num_pages
+    paper_total = paper_price_per_sheet * (sheets or num_pages)
     subtotal = ink_total + paper_total
 
     category_amounts = {name: subtotal * (pct / 100.0) for name, pct in percentages.items()}
@@ -220,6 +221,7 @@ def compute_cost(pages_coverage, ink_prices: dict, paper_price_per_sheet: float,
 
     return {
         "num_pages": num_pages,
+        "sheets": sheets or num_pages,
         "color_pages": sum(1 for p in per_page if p["is_color"]),
         "per_page": per_page,
         "ink_total": ink_total,

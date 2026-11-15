@@ -69,6 +69,7 @@ DEFAULT_SETTINGS = {
         "overlap_in": 0.0, "margin_in": 0.25, "marks": False, "labels": False,
         "pricing_mode": "calculated", "fee": 0.0,
     },
+    "duplex": {"extra_per_sheet": 0.0, "discount_pct": 0.0, "margin_in": 0.25, "printers": {}},
 }
 
 def load_default_settings() -> dict:
@@ -86,9 +87,9 @@ def load_settings() -> dict:
 
     for key, value in DEFAULT_SETTINGS.items():
         data.setdefault(key, json.loads(json.dumps(value)))
-    for group in ("ink_prices", "default_percentages", "quality_multipliers", "poster"):
+    for group in ("ink_prices", "default_percentages", "quality_multipliers", "poster", "duplex"):
         for k, v in DEFAULT_SETTINGS[group].items():
-            data[group].setdefault(k, v)
+            data[group].setdefault(k, json.loads(json.dumps(v)))
     if not data.get("a5_a6_added"):
         have = {p["name"] for p in data["paper_sizes"]}
         at = next((i + 1 for i, p in enumerate(data["paper_sizes"]) if p["name"].startswith("A4")),

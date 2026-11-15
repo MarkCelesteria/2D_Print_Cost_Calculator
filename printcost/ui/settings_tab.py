@@ -543,6 +543,25 @@ class SettingsTab(QWidget):
             "Raise it to ignore tiny colored items.")
         rules_layout.addWidget(self.color_threshold_input, 3, 3)
 
+        duplex = self.settings["duplex"]
+        rules_layout.addWidget(QLabel("Double-sided extra / sheet"), 4, 0)
+        self.duplex_extra_input = QLineEdit(str(duplex["extra_per_sheet"]))
+        self.duplex_extra_input.setFixedWidth(80)
+        self.duplex_extra_input.setToolTip("Added to every sheet of a back-to-back or booklet job. 0 for none.")
+        rules_layout.addWidget(self.duplex_extra_input, 4, 1)
+
+        rules_layout.addWidget(QLabel("Double-sided paper discount %"), 4, 2)
+        self.duplex_discount_input = QLineEdit(str(duplex["discount_pct"]))
+        self.duplex_discount_input.setFixedWidth(80)
+        self.duplex_discount_input.setToolTip("Taken off the paper price of every sheet of a double-sided job. 0 for none.")
+        rules_layout.addWidget(self.duplex_discount_input, 4, 3)
+
+        rules_layout.addWidget(QLabel("Booklet margin (in)"), 5, 0)
+        self.duplex_margin_input = QLineEdit(str(duplex["margin_in"]))
+        self.duplex_margin_input.setFixedWidth(80)
+        self.duplex_margin_input.setToolTip("Space kept around each booklet page, including at the fold and staples.")
+        rules_layout.addWidget(self.duplex_margin_input, 5, 1)
+
         # ---- Discounts ----
         disc_card, disc_layout = card()
         root.addWidget(disc_card)
@@ -767,6 +786,9 @@ class SettingsTab(QWidget):
         self.min_price_color_input.setText(_opt_str(self.settings["min_price_color"]))
         self.max_price_input.setText(_opt_str(self.settings["max_price_per_page"]))
         self.color_threshold_input.setText(str(self.settings["color_threshold_pct"]))
+        self.duplex_extra_input.setText(str(self.settings["duplex"]["extra_per_sheet"]))
+        self.duplex_discount_input.setText(str(self.settings["duplex"]["discount_pct"]))
+        self.duplex_margin_input.setText(str(self.settings["duplex"]["margin_in"]))
         self.black_mix_input.setText(str(self.settings["high_black_mix"]))
         for key, field in self.quality_inputs.items():
             field.setText(str(self.settings["quality_multipliers"][key]))
@@ -797,6 +819,14 @@ class SettingsTab(QWidget):
             if not 0 <= threshold <= 100:
                 raise ValueError
             self.settings["color_threshold_pct"] = threshold
+            duplex = self.settings["duplex"]
+            duplex["extra_per_sheet"] = float(self.duplex_extra_input.text().strip() or 0)
+            discount = float(self.duplex_discount_input.text().strip() or 0)
+            margin = float(self.duplex_margin_input.text().strip() or 0)
+            if not 0 <= discount <= 100 or not 0 <= margin <= 2:
+                raise ValueError
+            duplex["discount_pct"] = discount
+            duplex["margin_in"] = margin
             self.settings["shop_name"] = self.shop_input.text().strip() or "Print Cost Calculator"
             mix = float(self.black_mix_input.text().strip() or 0)
             if not 0 <= mix <= 100:

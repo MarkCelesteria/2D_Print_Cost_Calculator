@@ -87,8 +87,13 @@ def _draw(page, d):
     row("Paper", d["paper"])
     row("Paper type", d.get("paper_type", "Plain paper"))
     row("Mode / Quality", f"{MODES.get(d['mode'], 'Color')} / {d['quality'].title()}")
-    row("Pages", f"{format_page_ranges(pages)} ({len(pages)} of {d['page_count']})" if pages
-        else f"All ({r['num_pages']})")
+    lay = d.get("layout")
+    if lay:
+        row("Layout", lay["name"])
+        row("Sheets", f"{lay['sheets']} ({lay['pages']} pages)")
+    else:
+        row("Pages", f"{format_page_ranges(pages)} ({len(pages)} of {d['page_count']})" if pages
+            else f"All ({r['num_pages']})")
     row("Color / B&W", f"{r['color_pages']} / {r['num_pages'] - r['color_pages']}")
     rule()
 
@@ -106,7 +111,7 @@ def _draw(page, d):
     per = r["per_page"]
     if len(per) <= DETAIL_MAX:
         center("Color use per page (%)", 9, "hebo", gap=1.7)
-        cells(["Page", "C", "M", "Y", "K", "Price"], "hebo", MUTED)
+        cells(["Side" if lay else "Page", "C", "M", "Y", "K", "Price"], "hebo", MUTED)
         for p in per:
             c = p["coverage"]
             cells([str(p["page"])] + [f"{c[k] * 100:.1f}" for k in "CMYK"] + [f"{p['page_cost']:.2f}"])
