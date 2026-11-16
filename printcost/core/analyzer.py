@@ -324,7 +324,7 @@ except ImportError:
 
 from PIL import ImageOps
 
-IMAGE_EXTS = (".jpg", ".jpeg", ".jfif", ".jpe", ".png", ".bmp", ".webp", ".tif", ".tiff", ".heic", ".heif")
+IMAGE_EXTS = (".jpg", ".jpeg", ".jfif", ".jpe", ".png", ".bmp", ".webp", ".tif", ".tiff", ".heic", ".heif", ".avif")
 DOC_EXTS = (".pdf", ".docx")
 SUPPORTED_EXTS = DOC_EXTS + IMAGE_EXTS
 

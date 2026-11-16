@@ -555,7 +555,7 @@ def effective_dpi(img, spec):
 
 # ---------------- preview ----------------
 
-def preview_sheet(img, spec, landscape, sheets, index, max_px=520, sig=None):
+def preview_sheet(img, spec, landscape, sheets, index, max_px=520, sig=None, resample=Image.BILINEAR):
     """One sheet as a PIL picture. Returns (image, pixels per inch)."""
     sw, sh = sheet_size(spec["paper"], landscape)
     s = max_px / max(sw, sh)
@@ -564,12 +564,32 @@ def preview_sheet(img, spec, landscape, sheets, index, max_px=520, sig=None):
     cache = {}
     for x, y, w, h, idx in sheets[index]:
         if idx not in cache:
-            cache[idx] = render_cell(img, spec["entries"][idx], spec["focus"], spec, sig, s, Image.BILINEAR)
+            cache[idx] = render_cell(img, spec["entries"][idx], spec["focus"], spec, sig, s, resample)
         canvas.paste(cache[idx], (round(x * s), round(y * s)))
     if spec.get("lines"):
         for (x1, y1), (x2, y2) in cut_segments(spec, sheets[index]):
             draw.line([round(x1 * s), round(y1 * s), round(x2 * s), round(y2 * s)], fill=(190, 190, 190))
     return canvas, s
+
+
+# ---------------- export as picture files ----------------
+
+EXPORT_PPI = 300
+
+
+def render_sheet(img, spec, landscape, sheets, index, sig=None, ppi=EXPORT_PPI):
+    """One sheet as a print-quality PIL picture (`ppi` pixels per inch), the same layout as the PDF."""
+    sw, sh = sheet_size(spec["paper"], landscape)
+    return preview_sheet(img, spec, landscape, sheets, index, max_px=round(max(sw, sh) * ppi), sig=sig,
+                         resample=None)[0]
+
+
+def save_image(im, path, ppi=EXPORT_PPI):
+    """PNG, or JPEG when the name ends in .jpg / .jpeg. The dpi is stored so it prints at the right size."""
+    if os.path.splitext(path)[1].lower() in (".jpg", ".jpeg"):
+        im.convert("RGB").save(path, "JPEG", quality=95, subsampling=0, dpi=(ppi, ppi))
+    else:
+        im.save(path, "PNG", dpi=(ppi, ppi))
 
 
 # ---------------- signature ----------------

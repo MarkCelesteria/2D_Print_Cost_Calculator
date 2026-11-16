@@ -1,4 +1,6 @@
+import math
 import os
+import re
 from types import SimpleNamespace
 
 from PIL import Image
@@ -8,7 +10,7 @@ from PyQt6.QtGui import QPainter, QColor, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QGridLayout, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QSpinBox, QDoubleSpinBox,
     QCheckBox, QLineEdit, QPushButton, QFileDialog, QMessageBox, QWidget, QDialogButtonBox, QApplication,
-    QSizePolicy, QFrame, QScrollArea, QSlider, QInputDialog, QTabWidget,
+    QSizePolicy, QFrame, QScrollArea, QSlider, QInputDialog, QTabWidget, QMenu,
 )
 
 from printcost.core import idphoto
@@ -16,7 +18,7 @@ from printcost.core import pricing
 from printcost.core.analyzer import IMAGE_EXTS, load_image_rgb, make_temp_dir
 from printcost.ui.icons import make_icon
 from printcost.ui.idphoto_editor import LayoutEditorDialog
-from printcost.ui.photo_edit_dialog import PhotoEditDialog
+from printcost.ui.photo_edit_dialog import FitWidthScroll, PhotoEditDialog
 from printcost.ui.notes import label_style
 from printcost.ui.preview_widget import pil_to_qpixmap
 from printcost.ui.style import BORDER, MUTED, PREVIEW_BG, PRIMARY, MAGENTA
@@ -412,7 +414,7 @@ class IdPhotoDialog(QDialog):
         right = QVBoxLayout()
         root.addLayout(right, 1)
 
-        form_scroll = QScrollArea()          # everything in one scrolling column
+        form_scroll = FitWidthScroll()       # everything in one scrolling column (never slides sideways)
         form_scroll.setWidgetResizable(True)
         form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         form_scroll.setFixedWidth(390)
@@ -441,7 +443,8 @@ class IdPhotoDialog(QDialog):
         v = page("Photos")
         src_row = QHBoxLayout()
         self.source_label = QLabel("")
-        self.source_label.setWordWrap(True)
+        self.source_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.source_label.setMinimumWidth(0)
         change = QPushButton("Change…")
         change.setObjectName("secondary")
         change.clicked.connect(self._change_source)
@@ -637,6 +640,13 @@ class IdPhotoDialog(QDialog):
         left.addWidget(self.note_label)
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.export_btn = QPushButton("Export image")
+        self.export_btn.setObjectName("secondary")
+        self.export_btn.setToolTip("Save the ID photo or the print sheets as picture files (PNG or JPG, 300 dpi)")
+        self.export_menu = QMenu(self.export_btn)
+        self.export_menu.aboutToShow.connect(self._fill_export_menu)
+        self.export_btn.setMenu(self.export_menu)
+        self.buttons.addButton(self.export_btn, QDialogButtonBox.ButtonRole.ActionRole)
         self.create_btn = QPushButton("Create ID sheets")
         self.create_btn.setObjectName("cta")
         self.buttons.addButton(self.create_btn, QDialogButtonBox.ButtonRole.AcceptRole)
@@ -733,7 +743,10 @@ class IdPhotoDialog(QDialog):
         self.img, self.src, self.path = thumb, img, path
         if not edited:
             self.orig_path, self.edit_state = path, None
-        self.source_label.setText(os.path.basename(self.orig_path) + (" (edited)" if edited else ""))
+        name = os.path.basename(self.orig_path) + (" (edited)" if edited else "")
+        self.source_label.setText(self.source_label.fontMetrics().elidedText(
+            name, Qt.TextElideMode.ElideMiddle, 220))
+        self.source_label.setToolTip(name)
         return True
 
     def done(self, code):
@@ -880,25 +893,101 @@ class IdPhotoDialog(QDialog):
             self._reset_options()
             self._position()
 
+    def _crop_box(self, size, spec):
+        """The part of the picture the photos actually use: the union of every size's crop at the current
+        position, plus a little air. Editing only this part keeps the lighting judged on the head."""
+        W, H = size
+        boxes = [idphoto.focus_box(W, H, idphoto.photo_aspect(e, spec), self.focus) for e in spec["entries"]]
+        x0, y0 = min(b[0] for b in boxes), min(b[1] for b in boxes)
+        x1, y1 = max(b[2] for b in boxes), max(b[3] for b in boxes)
+        px, py = 0.04 * (x1 - x0), 0.04 * (y1 - y0)
+        return (max(0, math.floor(x0 - px)), max(0, math.floor(y0 - py)),
+                min(W, math.ceil(x1 + px)), min(H, math.ceil(y1 + py)))
+
+    @staticmethod
+    def _focus_into_crop(focus, size, box, aspect):
+        """The same crop, described relative to the cut-out picture instead of the whole one."""
+        b = idphoto.focus_box(size[0], size[1], aspect, focus)
+        bw, bh = box[2] - box[0], box[3] - box[1]
+        return ((((b[0] + b[2]) / 2 - box[0]) / bw), (((b[1] + b[3]) / 2 - box[1]) / bh),
+                min(1.0, (b[3] - b[1]) / bh))
+
+    @staticmethod
+    def _focus_out_of_crop(focus, size, box, crop_size, aspect):
+        """Inverse of _focus_into_crop: where the current crop sits in the original picture."""
+        b = idphoto.focus_box(crop_size[0], crop_size[1], aspect, focus)
+        bw, bh = box[2] - box[0], box[3] - box[1]
+        fx0, fx1, fy0, fy1 = b[0] / crop_size[0], b[2] / crop_size[0], b[1] / crop_size[1], b[3] / crop_size[1]
+        ox0, ox1 = box[0] + fx0 * bw, box[0] + fx1 * bw
+        oy0, oy1 = box[1] + fy0 * bh, box[1] + fy1 * bh
+        return ((ox0 + ox1) / 2 / size[0], (oy0 + oy1) / 2 / size[1], min(1.0, (oy1 - oy0) / size[1]))
+
+    def _ask_edit_resolution(self, box):
+        """Asks how big the edited picture should be. Returns (ok, max_px); max_px None = keep the original size."""
+        bw, bh = box[2] - box[0], box[3] - box[1]
+        total = bw * bh
+        big = " (slow, needs a lot of memory)" if total > 24e6 else ""
+        options = [(f"Original size, {bw} × {bh} px ({total / 1e6:.1f} MP){big}", None)]
+        for name, mp in (("High", 16), ("Medium", 8), ("Low (fastest)", 4)):
+            if mp * 1e6 < total * 0.97:
+                k = math.sqrt(mp * 1e6 / total)
+                options.append((f"{name}, {round(bw * k)} × {round(bh * k)} px ({mp} MP)", mp * 1_000_000))
+        if len(options) == 1:       # small picture: there is nothing to choose
+            return True, None
+        text = ("How big should the edited photo be?\n\nBigger keeps more detail but is slower and uses more "
+                "memory. For printing, about 300 pixels per inch of the photo is enough.")
+        choice, ok = QInputDialog.getItem(self, "Photo resolution", text, [o[0] for o in options],
+                                          0 if total <= 16.5e6 else 1, False)
+        if not ok:
+            return False, None
+        return True, next(v for label, v in options if label == choice)
+
     def _edit_photo(self):
         try:
             base = load_image_rgb(self.orig_path)
         except Exception as e:
             QMessageBox.warning(self, "Can't use this file", str(e))
             return
-        dlg = PhotoEditDialog(self, base, self.edit_state)
+        spec = self._spec()
+        if not spec["entries"]:
+            QMessageBox.information(self, "Edit photo", "Add at least one photo size first.")
+            return
+        try:
+            aspect = idphoto.photo_aspect(spec["entries"][0], spec)
+            state = self.edit_state if (self.edit_state and self.edit_state.get("box")) else None
+            if state is not None:       # editing again: same part of the picture, so the cutout still fits
+                box = tuple(state["box"])
+                cur_size = self.src.size if self.src is not None else self.full_size
+                orig_focus = self._focus_out_of_crop(self.focus, base.size, box, cur_size, aspect)
+            else:
+                box = self._crop_box(base.size, spec)
+                orig_focus = self.focus
+            ok, max_px = self._ask_edit_resolution(box)
+            if not ok:
+                return
+            dlg = PhotoEditDialog(self, base, state, box, max_px=max_px)
+        except Exception as e:
+            QMessageBox.warning(self, "Can't open the photo editor", f"{type(e).__name__}: {e}")
+            return
         if dlg.exec() != dlg.DialogCode.Accepted:
             return
-        if dlg.result_image is None:
-            self._set_source(self.orig_path)
-        else:
-            name = os.path.splitext(os.path.basename(self.orig_path))[0] + " (edited).png"
-            path = os.path.join(make_temp_dir(), name)
-            dlg.result_image.save(path, "PNG", compress_level=1)
-            if not self._set_source(path, edited=True):
-                return
-            self.edit_state = dlg.result_state
-        self._refresh()
+        try:
+            if dlg.result_image is None:
+                if not self._set_source(self.orig_path):
+                    return
+                self.focus = tuple(orig_focus)
+            else:
+                name = os.path.splitext(os.path.basename(self.orig_path))[0] + " (edited).png"
+                path = os.path.join(make_temp_dir(), name)
+                dlg.result_image.save(path, "PNG", compress_level=1)
+                if not self._set_source(path, edited=True):
+                    return
+                self.edit_state = dlg.result_state
+                self.focus = self._focus_into_crop(orig_focus, base.size, box, aspect)
+        except Exception as e:
+            QMessageBox.warning(self, "Couldn't use the edited photo", f"{type(e).__name__}: {e}")
+            return
+        self._set_focus(self.focus)
 
     def _reset_options(self):
         """Back to the defaults (used when a different photo is chosen). Only the pricing is kept."""
@@ -1051,6 +1140,73 @@ class IdPhotoDialog(QDialog):
         self._refresh()
 
     # ---------------- result ----------------
+
+    # ---------------- export as picture files ----------------
+
+    def _fill_export_menu(self):
+        self.export_menu.clear()
+        spec = self._spec()
+        err = idphoto.validate(spec)
+        if err:
+            self.export_menu.addAction(err).setEnabled(False)
+            return
+        for e in spec["entries"]:
+            if e["qty"] > 0:
+                act = self.export_menu.addAction(f"ID photo, {idphoto.size_name(e['w'], e['h'])}")
+                act.triggered.connect(lambda checked=False, ent=dict(e): self._export_photo(ent))
+        self.export_menu.addSeparator()
+        n = len(idphoto.best_plan(spec)[1])
+        act = self.export_menu.addAction("Print sheet" if n == 1 else f"All {n} print sheets")
+        act.triggered.connect(self._export_sheets)
+
+    def _ask_image_path(self, title, name):
+        base = re.sub(r"[^\w.-]+", "_", os.path.splitext(os.path.basename(self.orig_path))[0]).strip("_") or "photo"
+        start = os.path.join(os.path.dirname(self.orig_path), f"{base}_{name}.png")
+        path, chosen = QFileDialog.getSaveFileName(self, title, start, "PNG image (*.png);;JPEG image (*.jpg)")
+        if not path:
+            return None
+        if os.path.splitext(path)[1].lower() not in (".png", ".jpg", ".jpeg"):
+            path += ".jpg" if "jpg" in chosen.lower() else ".png"
+        return path
+
+    def _export_photo(self, entry):
+        spec = self._spec()
+        path = self._ask_image_path("Export ID photo", re.sub(r"[^\w.-]+", "_", idphoto.size_name(entry["w"], entry["h"]).replace("×", "x")))
+        if not path:
+            return
+        sig = self.sig_img if spec["signature_path"] else None
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            im = idphoto.render_cell(self.src, entry, spec["focus"], spec, sig, idphoto.EXPORT_PPI)
+            idphoto.save_image(im, path)
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Couldn't export", str(e))
+            return
+        QApplication.restoreOverrideCursor()
+        QMessageBox.information(self, "Exported", f"Saved:\n{path}")
+
+    def _export_sheets(self):
+        spec = self._spec()
+        path = self._ask_image_path("Export print sheets", "sheet")
+        if not path:
+            return
+        sig = self.sig_img if spec["signature_path"] else None
+        stem, ext = os.path.splitext(path)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        saved = []
+        try:
+            landscape, sheets = idphoto.best_plan(spec)
+            for i in range(len(sheets)):
+                target = path if len(sheets) == 1 else f"{stem}_{i + 1}{ext}"
+                idphoto.save_image(idphoto.render_sheet(self.src, spec, landscape, sheets, i, sig), target)
+                saved.append(target)
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Couldn't export", str(e))
+            return
+        QApplication.restoreOverrideCursor()
+        QMessageBox.information(self, "Exported", "Saved:\n" + "\n".join(saved))
 
     def _accept(self):
         spec = self._spec()

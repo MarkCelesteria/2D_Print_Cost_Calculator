@@ -1,11 +1,14 @@
+import functools
+import gc
 import math
+import traceback
 
 import numpy as np
 from PIL import Image
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PyQt6.QtCore import Qt, QEvent, QTimer, QRectF, QPointF, pyqtSignal
+from PyQt6.QtGui import QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
-    QApplication, QColorDialog, QDialog, QFrame, QHBoxLayout, QLabel, QMessageBox, QProgressDialog,
+    QApplication, QColorDialog, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QMessageBox, QProgressDialog,
     QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
@@ -13,8 +16,65 @@ from printcost.core import matting, photofx
 from printcost.ui.style import BORDER, MAGENTA, PREVIEW_BG, PRIMARY
 
 LIGHT_SLIDERS = [("exposure", "Exposure"), ("shadows", "Shadows"), ("highlights", "Highlights"),
-                 ("contrast", "Contrast"), ("warmth", "Warmth")]
+                 ("contrast", "Contrast"), ("warmth", "Warmth"), ("balance", "Left / right"), ("even", "Even out")]
 UNDO_LIMIT = 15
+LIGHT_BRUSHES = ("lighten", "darken", "light_clear")
+EDGE_BRUSHES = ("sharpen", "smooth", "edge_clear")
+BRUSH_TYPES = [("None (move the picture)", "view"), ("Restore (bring back cutout)", "restore"),
+               ("Erase (remove background)", "erase"), ("Lighten", "lighten"), ("Darken", "darken"),
+               ("Sharpen edge", "sharpen"), ("Smooth edge", "smooth"),
+               ("Clear light strokes", "light_clear"), ("Clear edge strokes", "edge_clear")]
+BRUSH_HINTS = {
+    "view": "Pick a brush above, then paint on the photo. Lighten and Darken work on the whole photo. "
+            "Restore, Erase and the edge brushes need the background removed first.",
+    "restore": "Brings back parts the cutout removed (hair, shoulders, glasses).",
+    "erase": "Removes leftover background.",
+    "lighten": "Brightens only where you paint (dark side of the hair, shadows). Raise Strength and paint "
+               "again for more.",
+    "darken": "Darkens only where you paint (shiny or too bright spots).",
+    "sharpen": "Makes the outline crisper where you paint. Good for soft, fuzzy spots.",
+    "smooth": "Evens out a rough outline where you paint and keeps it crisp. Very thin loose strands can "
+              "disappear, so lower Strength if needed.",
+    "light_clear": "Paint over earlier Lighten / Darken strokes to remove them.",
+    "edge_clear": "Paint over earlier Sharpen / Smooth strokes to remove them.",
+}
+CUTOUT_MODES = ("restore", "erase") + EDGE_BRUSHES      # tools that need a cutout
+BRUSH_COLORS = {"restore": PRIMARY, "erase": MAGENTA, "lighten": "#f59e0b", "darken": "#475569",
+                "light_clear": "#94a3b8", "sharpen": "#16a34a", "smooth": "#7c3aed", "edge_clear": "#94a3b8"}
+
+
+class FitWidthScroll(QScrollArea):
+    """Scrolls up and down only. The content is never wider than the visible area, so something long
+    (a file name, a message) can't make the panel slide sideways."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.verticalScrollBar().rangeChanged.connect(lambda *_: self._fit())
+
+    def _fit(self):
+        if self.widget() is not None:
+            self.widget().setMaximumWidth(max(1, self.viewport().width()))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit()
+
+
+def guarded(fn):
+    """Qt slots must never raise: in PyQt6 an uncaught exception inside one closes the whole program.
+    Show what went wrong (and print it) instead, and keep the dialog alive."""
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        except Exception as e:
+            traceback.print_exc()
+            self._last = None                 # drop a half-finished brush stroke
+            self._dirty = None
+            self._report_error(e, fn.__name__)
+    return wrapper
 
 
 class NoWheelSlider(QSlider):
@@ -30,72 +90,170 @@ class PhotoCanvas(QWidget):
     pressed = pyqtSignal(float, float)
     dragged = pyqtSignal(float, float)
     released = pyqtSignal()
+    zoom_changed = pyqtSignal(float)
+    MAX_ZOOM = 8.0
 
     def __init__(self):
         super().__init__()
         self.setMinimumSize(520, 560)
         self.setMouseTracking(True)
-        self.pix = None
+        self.pix = None          # QImage that shares memory with self.array
+        self.array = None
         self.mode = "view"
-        self.radius = 18
+        self.radius = 12         # brush radius in SCREEN pixels: it looks the same at any zoom
+        self.zoom = 1.0          # 1.0 = the whole picture fits the window
+        self.pan = QPointF(0, 0)
         self._hover = None
         self._down = False
+        self._panning = None     # (mouse start, pan at start, button)
 
     def set_array(self, arr):
-        arr = np.ascontiguousarray(arr)
-        h, w = arr.shape[:2]
-        self.pix = QPixmap.fromImage(QImage(arr.data, w, h, w * 3, QImage.Format.Format_RGB888).copy())
+        self.array = np.array(arr, dtype=np.uint8, order="C")    # a copy: the brush repaints it in place
+        h, w = self.array.shape[:2]
+        self.pix = QImage(self.array.data, w, h, w * 3, QImage.Format.Format_RGB888)
         self.update()
 
     def set_mode(self, mode):
         self.mode = mode
-        self.setCursor(Qt.CursorShape.CrossCursor if mode != "view" else Qt.CursorShape.ArrowCursor)
+        self._update_cursor()
         self.update()
 
-    def _rect(self):
+    def _update_cursor(self):
+        if self.mode != "view":
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.setCursor(Qt.CursorShape.OpenHandCursor if self.zoom > 1.001 else Qt.CursorShape.ArrowCursor)
+
+    # ---------------- view (zoom / pan) ----------------
+
+    def image_scale(self):
         pad = 12
-        s = min((self.width() - 2 * pad) / self.pix.width(), (self.height() - 2 * pad) / self.pix.height())
+        fit = min((self.width() - 2 * pad) / self.pix.width(), (self.height() - 2 * pad) / self.pix.height())
+        return fit * self.zoom
+
+    def brush_radius_image(self):
+        """Brush radius in picture pixels (it shrinks as you zoom in, so the brush stays the same on screen)."""
+        return self.radius / self.image_scale() if self.pix is not None else self.radius
+
+    def _rect(self):
+        s = self.image_scale()
         w, h = self.pix.width() * s, self.pix.height() * s
-        return QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
+        return QRectF((self.width() - w) / 2 + self.pan.x(), (self.height() - h) / 2 + self.pan.y(), w, h)
+
+    def _clamp_pan(self):
+        if self.pix is None or self.zoom <= 1.001:
+            self.pan = QPointF(0, 0)
+            return
+        s = self.image_scale()
+        lx = max(0.0, (self.pix.width() * s + self.width()) / 2 - 60)
+        ly = max(0.0, (self.pix.height() * s + self.height()) / 2 - 60)
+        self.pan = QPointF(min(max(self.pan.x(), -lx), lx), min(max(self.pan.y(), -ly), ly))
+
+    def zoom_to(self, z, anchor=None):
+        """Zoom so the picture point under `anchor` (widget coordinates; default = the middle) stays put."""
+        if self.pix is None:
+            return
+        z = min(max(z, 1.0), self.MAX_ZOOM)
+        anchor = anchor if anchor is not None else QPointF(self.width() / 2, self.height() / 2)
+        ix, iy = self._to_image(anchor)
+        self.zoom = z
+        r = self._rect()
+        s = self.image_scale()
+        self.pan = QPointF(self.pan.x() + anchor.x() - (r.x() + ix * s), self.pan.y() + anchor.y() - (r.y() + iy * s))
+        self._clamp_pan()
+        self._update_cursor()
+        self.update()
+        self.zoom_changed.emit(self.zoom)
+
+    def zoom_by(self, factor, anchor=None):
+        self.zoom_to(self.zoom * factor, anchor)
+
+    def fit(self):
+        self.zoom_to(1.0)
+
+    def wheelEvent(self, event):
+        event.accept()
+        if self.pix is None:
+            return
+        ad, pd = event.angleDelta(), event.pixelDelta()
+        ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)      # pinch on a touchpad = Ctrl + wheel
+        touchpad = (not pd.isNull()) or ad.x() != 0 or ad.y() % 120 != 0 or \
+            event.phase() != Qt.ScrollPhase.NoScrollPhase
+        if touchpad and not ctrl:        # two-finger swipe: move the picture (when zoomed in)
+            if self.zoom > 1.001:
+                d = QPointF(pd) if not pd.isNull() else QPointF(ad.x() * 0.5, ad.y() * 0.5)
+                self.pan = QPointF(self.pan.x() + d.x(), self.pan.y() + d.y())
+                self._clamp_pan()
+                self.update()
+        elif ad.y():                     # mouse wheel (or pinch): zoom
+            self.zoom_by(1.2 ** (ad.y() / 120.0), event.position())
+
+    def resizeEvent(self, event):
+        self._clamp_pan()
+        super().resizeEvent(event)
 
     def _to_image(self, pos):
         r = self._rect()
         k = self.pix.width() / r.width()
         return (pos.x() - r.x()) * k, (pos.y() - r.y()) * k
 
+    # ---------------- painting ----------------
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(PREVIEW_BG))
         if self.pix is None:
             return
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.zoom < 3)   # crisp pixels when zoomed right in
         r = self._rect()
-        p.drawPixmap(r, self.pix, QRectF(self.pix.rect()))
+        vis = r.intersected(QRectF(self.rect()))
+        if vis.width() > 0 and vis.height() > 0:
+            s = r.width() / self.pix.width()
+            p.drawImage(vis, self.pix, QRectF((vis.x() - r.x()) / s, (vis.y() - r.y()) / s, vis.width() / s, vis.height() / s))
         p.setPen(QPen(QColor(BORDER), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(r)
-        if self._hover is not None and self.mode in ("restore", "erase"):
-            rad = self.radius * r.width() / self.pix.width()
+        if self._hover is not None and self.mode in BRUSH_COLORS and self._panning is None:
+            rad = self.radius
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             p.setPen(QPen(QColor("white"), 3))
             p.drawEllipse(self._hover, rad, rad)
-            p.setPen(QPen(QColor(MAGENTA if self.mode == "erase" else PRIMARY), 1.5))
+            p.setPen(QPen(QColor(BRUSH_COLORS[self.mode]), 1.5))
             p.drawEllipse(self._hover, rad, rad)
 
+    # ---------------- mouse ----------------
+
     def mousePressEvent(self, event):
-        if self.pix is None or event.button() != Qt.MouseButton.LeftButton or self.mode == "view":
+        if self.pix is None:
+            return
+        btn = event.button()
+        if btn in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton) or \
+                (btn == Qt.MouseButton.LeftButton and self.mode == "view"):
+            if self.zoom > 1.001:            # middle / right drag (or left drag when no tool is on) moves the picture
+                self._panning = (event.position(), QPointF(self.pan), btn)
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+        if btn != Qt.MouseButton.LeftButton:
             return
         self._down = True
         self.pressed.emit(*self._to_image(event.position()))
 
     def mouseMoveEvent(self, event):
         self._hover = event.position()
-        if self._down:
+        if self._panning is not None:
+            start, pan0, _ = self._panning
+            d = event.position() - start
+            self.pan = QPointF(pan0.x() + d.x(), pan0.y() + d.y())
+            self._clamp_pan()
+        elif self._down:
             self.dragged.emit(*self._to_image(event.position()))
         self.update()
 
     def mouseReleaseEvent(self, event):
-        if self._down:
+        if self._panning is not None and event.button() == self._panning[2]:
+            self._panning = None
+            self._update_cursor()
+        elif self._down and event.button() == Qt.MouseButton.LeftButton:
             self._down = False
             self.released.emit()
 
@@ -105,9 +263,16 @@ class PhotoCanvas(QWidget):
 
 
 class PhotoEditDialog(QDialog):
-    def __init__(self, parent, pil_img, state=None):
+    def __init__(self, parent, pil_img, state=None, box=None, max_px=photofx.MAX_EXPORT_PX):
+        """box = (x0, y0, x1, y1) in pil_img pixels: only this part (the head crop) is edited and returned,
+        so the lighting and cutout are judged on the person, not on the whole picture.
+        max_px = most pixels the returned picture may have (None = keep the original size)."""
         super().__init__(parent)
+        self.max_px = max_px
         self.setWindowTitle("Edit photo")
+        self.box = tuple(int(v) for v in box) if box is not None else None
+        if self.box is not None:
+            pil_img = pil_img.crop(self.box)
         self.full = pil_img
         work = pil_img.copy()
         work.thumbnail((photofx.WORK_PX, photofx.WORK_PX), Image.LANCZOS)
@@ -115,15 +280,27 @@ class PhotoEditDialog(QDialog):
         self.work = np.asarray(work, dtype=np.uint8).copy()
         self.alpha = None
         self.bg = photofx.BACKGROUNDS[0][1]
-        self.feather, self.shrink = 10, 1
+        self.feather, self.shrink, self.sharp = 10, 1, photofx.DEFAULT_SHARP
         self.light = photofx.default_light()
         self.result_image = None
         self.result_state = None
         self._undo = []
         self._last = None
-        self._lit = self.work
+        self._lit = self.work           # global lighting + light brush
+        self._lit_global = self.work    # global lighting only
         self._lit_dirty = True
+        self.light_map = np.zeros(self.work.shape[:2], np.int8)    # light brush: + brighter, - darker
+        self.edge_map = np.zeros(self.work.shape[:2], np.int8)     # edge brush: + sharper, - smoother
+        self.light_strength, self.edge_strength = 35, 60
+        self.mode_buttons = {}
+        self._protect = None        # unsure areas inside the person, recomputed when the cutout changes
+        self._even_map = None       # light-evening map, computed on demand and when the cutout changes
         self._showing_original = False
+        self._dirty = None          # image box changed by the brush since the last repaint
+        self._brush_timer = QTimer(self)
+        self._brush_timer.setSingleShot(True)
+        self._brush_timer.setInterval(16)
+        self._brush_timer.timeout.connect(self._flush_brush)
         self._worker = None
         self._progress = None
         self._timer = QTimer(self)
@@ -132,6 +309,7 @@ class PhotoEditDialog(QDialog):
         self._timer.timeout.connect(self._render)
         self._restore_state(state)
         self._build()
+        QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), self).activated.connect(self._undo_stroke)
         self._sync_controls()
         self._render()
         self.resize(1040, 740)
@@ -144,6 +322,13 @@ class PhotoEditDialog(QDialog):
             self.alpha = state["alpha"].copy()
             self.bg = state["bg"]
             self.feather, self.shrink = state["feather"], state["shrink"]
+            self.sharp = state.get("sharp", photofx.DEFAULT_SHARP)
+            em = state.get("edge_map")
+            if em is not None and em.shape == self.work.shape[:2]:
+                self.edge_map = em.copy()
+        lm = state.get("light_map")
+        if lm is not None and lm.shape == self.work.shape[:2]:
+            self.light_map = lm.copy()
 
     # ---------------- layout ----------------
 
@@ -158,17 +343,39 @@ class PhotoEditDialog(QDialog):
         self.canvas.released.connect(self._release)
         left.addWidget(self.canvas, 1)
         bar = QHBoxLayout()
-        self.compare_btn = QPushButton("Hold to compare")
+        self.compare_btn = QPushButton("Hold to see original")
         self.compare_btn.setObjectName("secondary")
+        self.compare_btn.setToolTip("Hold this button, or hold the Shift key, to see the original photo")
         self.compare_btn.pressed.connect(lambda: self._compare(True))
         self.compare_btn.released.connect(lambda: self._compare(False))
         bar.addWidget(self.compare_btn)
         bar.addStretch()
+        self.zoom_label = QLabel("1.0×")
+        self.zoom_label.setObjectName("muted")
+        self.zoom_label.setFixedWidth(42)
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        zoom_out, zoom_in, zoom_fit = QPushButton("−"), QPushButton("+"), QPushButton("Fit")
+        for b, tip in ((zoom_out, "Zoom out"), (zoom_in, "Zoom in"), (zoom_fit, "Show the whole photo")):
+            b.setObjectName("secondary")
+            b.setToolTip(tip)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        zoom_out.setFixedWidth(34)
+        zoom_in.setFixedWidth(34)
+        zoom_out.clicked.connect(lambda: self.canvas.zoom_by(1 / 1.4))
+        zoom_in.clicked.connect(lambda: self.canvas.zoom_by(1.4))
+        zoom_fit.clicked.connect(self.canvas.fit)
+        self.canvas.zoom_changed.connect(lambda z: self.zoom_label.setText(f"{z:.1f}×"))
+        for w in (zoom_out, self.zoom_label, zoom_in, zoom_fit):
+            bar.addWidget(w)
         left.addLayout(bar)
+        tips = QLabel("Scroll to zoom · two-finger swipe (or drag with the middle / right button) to move around · "
+                      "Ctrl+Z to undo a stroke · hold Shift to see the original")
+        tips.setObjectName("muted")
+        left.addWidget(tips)
 
         right = QVBoxLayout()
         root.addLayout(right, 0)
-        scroll = QScrollArea()
+        scroll = FitWidthScroll()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setFixedWidth(340)
@@ -225,24 +432,28 @@ class PhotoEditDialog(QDialog):
         self.feather_slider = self._slider(v, "Feather", 0, 60, self.feather, self._set_feather,
                                            lambda x: f"{x / 10:.1f}")
         self.shrink_slider = self._slider(v, "Shrink edge", 0, 5, self.shrink, self._set_shrink)
+        self.sharp_slider = self._slider(v, "Edge sharpness", 0, 100, self.sharp, self._set_sharp)
 
-        v = section("Refine edges")
+        v = section("Brush")
         row = QHBoxLayout()
         row.setSpacing(6)
-        self.restore_btn = self._mode_button("Restore", "restore")
-        self.erase_btn = self._mode_button("Erase", "erase")
+        self.brush_combo = QComboBox()
+        for label, mode in BRUSH_TYPES:
+            self.brush_combo.addItem(label, mode)
+        self.brush_combo.currentIndexChanged.connect(lambda i: self._set_mode(self.brush_combo.itemData(i)))
         self.undo_btn = QPushButton("Undo")
         self.undo_btn.setObjectName("secondary")
+        self.undo_btn.setToolTip("Undo the last brush stroke (Ctrl+Z)")
         self.undo_btn.clicked.connect(self._undo_stroke)
-        for b in (self.restore_btn, self.erase_btn, self.undo_btn):
-            row.addWidget(b)
+        row.addWidget(self.brush_combo, 1)
+        row.addWidget(self.undo_btn)
         v.addLayout(row)
-        self.brush_slider = self._slider(v, "Brush size", 4, 80, 18, self._set_brush)
-        hint = QLabel("Restore brings back parts the cutout removed (hair, shoulders, glasses). "
-                      "Erase removes leftover background.")
-        hint.setObjectName("muted")
-        hint.setWordWrap(True)
-        v.addWidget(hint)
+        self.brush_slider = self._slider(v, "Brush size", 3, 60, 12, self._set_brush)
+        self.strength_slider = self._slider(v, "Strength", 5, 100, self.light_strength, self._set_strength)
+        self.brush_hint = QLabel("")
+        self.brush_hint.setObjectName("muted")
+        self.brush_hint.setWordWrap(True)
+        v.addWidget(self.brush_hint)
 
         v = section("Lighting")
         self.light_sliders = {}
@@ -262,6 +473,15 @@ class PhotoEditDialog(QDialog):
         for b in (self.auto_btn, self.wp_btn, self.light_reset):
             row.addWidget(b)
         v.addLayout(row)
+        self.light_sliders["even"].setToolTip("Lifts the shadow side of the person (adapts to the photo, row by row)")
+        self.light_sliders["balance"].setToolTip(
+            "Drag right if the right side of the face is too dark (left is too bright), left for the opposite")
+        self.balance_btn = QPushButton("Even out left / right light")
+        self.balance_btn.setObjectName("secondary")
+        self.balance_btn.setToolTip("Lifts the darker side of the face and body so the light looks even")
+        self.balance_btn.clicked.connect(self._auto_balance)
+        v.addWidget(self.balance_btn)
+
         body.addStretch()
 
         buttons = QHBoxLayout()
@@ -288,8 +508,23 @@ class PhotoEditDialog(QDialog):
         val.setFixedWidth(34)
         val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         s.valueChanged.connect(lambda x: (val.setText(fmt(x)), on_change(x)))
+        step = max(1, round((hi - lo) / 40))
+
+        def stepper(text, sign):
+            b = QPushButton(text)
+            b.setFixedSize(24, 24)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            b.setAutoRepeat(True)
+            b.setAutoRepeatDelay(350)
+            b.setAutoRepeatInterval(60)
+            b.setStyleSheet("QPushButton { padding: 0; font-size: 15px; }")
+            b.clicked.connect(lambda: s.setValue(s.value() + sign * step))
+            return b
+
         row.addWidget(name)
+        row.addWidget(stepper("−", -1))
         row.addWidget(s, 1)
+        row.addWidget(stepper("+", 1))
         row.addWidget(val)
         layout.addLayout(row)
         return s
@@ -299,16 +534,21 @@ class PhotoEditDialog(QDialog):
         b.setObjectName("secondary")
         b.setCheckable(True)
         b.toggled.connect(lambda on, m=mode: self._set_mode(m if on else "view"))
+        self.mode_buttons[mode] = b
         return b
 
     def _sync_controls(self):
         has = self.alpha is not None
-        for w in (self.clear_btn, self.restore_btn, self.erase_btn, self.brush_slider, self.feather_slider,
-                  self.shrink_slider, self.custom_btn, self.compare_btn, *[b for b, _ in self.swatches]):
+        for w in (self.clear_btn, self.feather_slider, self.shrink_slider, self.sharp_slider, self.custom_btn,
+                  *[b for b, _ in self.swatches]):
             w.setEnabled(has)
+        model = self.brush_combo.model()          # brushes that need a cutout are greyed out until there is one
+        for i in range(self.brush_combo.count()):
+            if self.brush_combo.itemData(i) in CUTOUT_MODES:
+                model.item(i).setEnabled(has)
         self.undo_btn.setEnabled(bool(self._undo))
         self.remove_btn.setText("Redo cutout" if has else "Remove background")
-        if not has and self.canvas.mode in ("restore", "erase"):
+        if not has and self.canvas.mode in CUTOUT_MODES:
             self._set_mode("view")
         presets = {c.lower() for _, c in photofx.BACKGROUNDS}
         for b, color in self.swatches:
@@ -328,18 +568,50 @@ class PhotoEditDialog(QDialog):
 
     # ---------------- rendering ----------------
 
+    @guarded
     def _render(self, fast=False):
         if self._lit_dirty:
-            self._lit = photofx.apply_lighting(self.work, self.light)
+            self._lit_global = photofx.apply_lighting(self.work, self.light, self._get_even_map())
+            self._lit = photofx.apply_local_light(self._lit_global, self.light_map)
             self._lit_dirty = False
         if self._showing_original:
             view = self.work
         elif self.alpha is None:
             view = self._lit
         else:
-            a = photofx.finish_alpha(self.alpha, self.feather / 10, self.shrink)
+            a = photofx.finish_alpha(self.alpha, self.feather / 10, self.shrink, self.sharp, 1.0,
+                                     self._get_protect(), self.edge_map)
             view = photofx.compose(self._lit, a, photofx.hex_to_rgb(self.bg), clean=not fast)
         self.canvas.set_array(view)
+
+    def _get_even_map(self):
+        if not self.light.get("even"):
+            return None
+        if self._even_map is None:
+            self._even_map = photofx.make_even_map(self.work, self.alpha)
+        return self._even_map
+
+    def _get_protect(self):
+        if self._protect is None and self.alpha is not None:
+            self._protect = photofx.interior_mask(self.alpha)
+        return self._protect
+
+    def _alpha_changed(self):
+        self._protect = None
+        self._even_map = None
+        if self.light.get("even"):
+            self._lit_dirty = True
+
+    def _report_error(self, e, where=""):
+        if getattr(self, "_reporting", False):
+            return
+        self._reporting = True
+        try:
+            QMessageBox.warning(self, "Something went wrong",
+                                f"{type(e).__name__}: {e}\n\nThe photo editor is still open, so your work is "
+                                f"kept. If it keeps happening, tell us this message (step: {where}).")
+        finally:
+            self._reporting = False
 
     def _compare(self, on):
         self._showing_original = on
@@ -365,8 +637,14 @@ class PhotoEditDialog(QDialog):
         self.shrink = v
         self._timer.start()
 
+    def _set_sharp(self, v):
+        self.sharp = v
+        self._timer.start()
+
     def _clear_cutout(self):
         self.alpha = None
+        self.edge_map[:] = 0
+        self._alpha_changed()
         self._undo.clear()
         self._sync_controls()
         self._render()
@@ -425,9 +703,12 @@ class PhotoEditDialog(QDialog):
         self._worker = worker
         worker.start()
 
+    @guarded
     def _matte_done(self, alpha):
         self._close_progress()
-        self.alpha = alpha
+        self.alpha = photofx.refine_matte(self.work, alpha)    # snap the soft model output to the real edges
+        self.edge_map[:] = 0
+        self._alpha_changed()
         self._undo.clear()
         self._sync_controls()
         self._render()
@@ -449,50 +730,122 @@ class PhotoEditDialog(QDialog):
 
     def _set_mode(self, mode):
         self.canvas.set_mode(mode)
-        for btn, m in ((self.restore_btn, "restore"), (self.erase_btn, "erase"), (self.wp_btn, "pick")):
+        for m, btn in self.mode_buttons.items():          # the White point button
             btn.blockSignals(True)
             btn.setChecked(m == mode)
             btn.blockSignals(False)
+        idx = self.brush_combo.findData(mode)
+        self.brush_combo.blockSignals(True)
+        self.brush_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.brush_combo.blockSignals(False)
+        self.strength_slider.setEnabled(mode in ("lighten", "darken", "sharpen", "smooth"))
+        self.brush_slider.setEnabled(mode in BRUSH_COLORS)
+        if mode in ("lighten", "darken"):
+            self.strength_slider.setValue(self.light_strength)
+        elif mode in ("sharpen", "smooth"):
+            self.strength_slider.setValue(self.edge_strength)
+        self.brush_hint.setText(BRUSH_HINTS.get(mode, ""))
 
     def _set_brush(self, v):
         self.canvas.radius = v
         self.canvas.update()
 
-    def _dab(self, x, y):
-        photofx.paint(self.alpha, x, y, self.brush_slider.value(), 255 if self.canvas.mode == "restore" else 0)
+    def _set_strength(self, v):
+        if self.canvas.mode in ("lighten", "darken"):
+            self.light_strength = v
+        elif self.canvas.mode in ("sharpen", "smooth"):
+            self.edge_strength = v
 
+    def _dab(self, x, y):
+        mode, r = self.canvas.mode, self.canvas.brush_radius_image()
+        if mode in ("restore", "erase"):
+            box = photofx.paint(self.alpha, x, y, r, 255 if mode == "restore" else 0)
+        elif mode in LIGHT_BRUSHES:
+            value = {"lighten": self.light_strength, "darken": -self.light_strength, "light_clear": 0}[mode]
+            box = photofx.paint_map(self.light_map, x, y, r, value, softness=1.0)
+        else:
+            value = {"sharpen": self.edge_strength, "smooth": -self.edge_strength, "edge_clear": 0}[mode]
+            box = photofx.paint_map(self.edge_map, x, y, r, value, softness=0.6)
+        if box is not None:
+            d = self._dirty
+            self._dirty = box if d is None else (min(d[0], box[0]), min(d[1], box[1]),
+                                                 max(d[2], box[2]), max(d[3], box[3]))
+
+    @guarded
+    def _flush_brush(self):
+        """Repaint only the part of the picture the brush touched (at most once per frame)."""
+        box, self._dirty = self._dirty, None
+        if box is None or self._showing_original or self.canvas.array is None:
+            return
+        h, w = self.work.shape[:2]
+        x0, y0, x1, y1 = max(0, box[0]), max(0, box[1]), min(w, box[2]), min(h, box[3])
+        if self.canvas.mode in LIGHT_BRUSHES:
+            if self._lit is self._lit_global:       # never paint into the shared global image
+                self._lit = self._lit_global.copy()
+            self._lit[y0:y1, x0:x1] = photofx.apply_local_light(self._lit_global[y0:y1, x0:x1],
+                                                                self.light_map[y0:y1, x0:x1])
+        if self.alpha is None:
+            self.canvas.array[y0:y1, x0:x1] = self._lit[y0:y1, x0:x1]
+        else:
+            m = int(3 * self.feather / 10) + 14          # extra border so the edge blur matches the rest
+            X0, Y0, X1, Y1 = max(0, box[0] - m), max(0, box[1] - m), min(w, box[2] + m), min(h, box[3] + m)
+            prot = self._get_protect()
+            a = photofx.finish_alpha(self.alpha[Y0:Y1, X0:X1], self.feather / 10, self.shrink, self.sharp, 1.0,
+                                     None if prot is None else prot[Y0:Y1, X0:X1], self.edge_map[Y0:Y1, X0:X1])
+            piece = photofx.compose(self._lit[Y0:Y1, X0:X1], a, photofx.hex_to_rgb(self.bg), clean=False)
+            self.canvas.array[y0:y1, x0:x1] = piece[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0]
+        self.canvas.update()
+
+    def _snapshot(self):
+        return (None if self.alpha is None else self.alpha.copy(), self.light_map.copy(), self.edge_map.copy())
+
+    @guarded
     def _press(self, x, y):
-        if self.canvas.mode == "pick":
+        mode = self.canvas.mode
+        if mode == "pick":
             self._pick(x, y)
             return
-        if self.alpha is None:
+        if mode in LIGHT_BRUSHES:
+            if self._lit_dirty:
+                self._render()
+        elif self.alpha is None:
             return
-        self._undo.append(self.alpha.copy())
+        self._undo.append(self._snapshot())
         del self._undo[:-UNDO_LIMIT]
         self.undo_btn.setEnabled(True)
         self._last = (x, y)
         self._dab(x, y)
-        self._render(fast=True)
+        self._brush_timer.start()
 
+    @guarded
     def _drag(self, x, y):
         if self._last is None:
             return
         lx, ly = self._last
-        steps = max(1, int(math.hypot(x - lx, y - ly) / max(1.0, self.brush_slider.value() * 0.25)))
+        steps = max(1, int(math.hypot(x - lx, y - ly) / max(1.0, self.canvas.brush_radius_image() * 0.25)))
         for i in range(1, steps + 1):
             t = i / steps
             self._dab(lx + (x - lx) * t, ly + (y - ly) * t)
         self._last = (x, y)
-        self._render(fast=True)
+        self._brush_timer.start()
 
+    @guarded
     def _release(self):
         if self._last is not None:
             self._last = None
-            self._render()
+            self._brush_timer.stop()
+            self._dirty = None
+            if self.canvas.mode in ("restore", "erase"):
+                self._alpha_changed()
+            self._render()          # one full-quality pass (with edge color cleanup) when the stroke ends
 
     def _undo_stroke(self):
-        if self._undo:
-            self.alpha = self._undo.pop()
+        if self._undo and self._last is None:
+            alpha, self.light_map, self.edge_map = self._undo.pop()
+            if alpha is not None:
+                self.alpha = alpha
+            self._alpha_changed()
+            self._lit_dirty = True
             self.undo_btn.setEnabled(bool(self._undo))
             self._render()
 
@@ -505,13 +858,21 @@ class PhotoEditDialog(QDialog):
 
     def _auto(self):
         self.light.update(photofx.auto_lighting(self.work, self.alpha))
+        self.light["even"] = 70
         for key, s in self.light_sliders.items():
             s.setValue(int(self.light[key]))
         self._lit_dirty = True
         self._render()
 
+    def _auto_balance(self):
+        self.light["even"] = 80
+        self.light_sliders["even"].setValue(80)
+        self._lit_dirty = True
+        self._render()
+
     def _reset_light(self):
         self.light = photofx.default_light()
+        self.light_map[:] = 0
         for s in self.light_sliders.values():
             s.setValue(0)
         self._lit_dirty = True
@@ -526,29 +887,90 @@ class PhotoEditDialog(QDialog):
         self._set_mode("view")
         self._render()
 
+    # ---------------- hold Shift to see the original ----------------
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Shift and not event.isAutoRepeat():
+            self._compare(True)
+            return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        if event.key() == Qt.Key.Key_Shift and not event.isAutoRepeat():
+            self._compare(False)
+            return
+        super().keyReleaseEvent(event)
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.ActivationChange and not self.isActiveWindow() and self._showing_original:
+            self._compare(False)          # the key release would go to another window
+        super().changeEvent(event)
+
     # ---------------- result ----------------
 
-    def _export(self):
+    def _export(self, max_px="default"):
+        """The finished picture. max_px = most pixels it may have (None = the original size)."""
+        if max_px == "default":
+            max_px = self.max_px
         full = self.full
-        k = photofx.MAX_EXPORT / max(full.size)
+        k = math.sqrt(max_px / (full.width * full.height)) if max_px else 1.0
         if k < 1:
             full = full.resize((round(full.width * k), round(full.height * k)), Image.LANCZOS)
-        out = photofx.apply_lighting(np.asarray(full, dtype=np.uint8), self.light)
+        out = photofx.light_full(np.asarray(full, dtype=np.uint8), self.light, self._get_even_map(), self.light_map)
         if self.alpha is not None:
-            a = photofx.finish_alpha(self.alpha, self.feather / 10, self.shrink)
+            a = photofx.export_alpha(out, self.alpha, self.feather / 10, self.shrink, self.sharp, self.edge_map)
             out = photofx.compose(out, a, photofx.hex_to_rgb(self.bg), clean=True)
+            del a
         return Image.fromarray(out)
 
+    def _export_safely(self):
+        """Returns (picture, note) or (None, None) when it failed. A big picture can run out of memory:
+        then it is retried at half the pixels, up to three times, and the person is told."""
+        px = self.full.width * self.full.height
+        if self.max_px:
+            px = min(px, self.max_px)
+        first = px
+        error = None
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for attempt in range(4):
+                try:
+                    img = self._export(None if attempt == 0 and not self.max_px else px)
+                    note = None if px == first else (
+                        f"The computer ran out of memory at full size, so the edited photo was made smaller "
+                        f"({img.width} x {img.height} px). Choose a lower resolution next time for big photos.")
+                    return img, note
+                except MemoryError as e:
+                    error = e
+                    gc.collect()
+                    px = int(px / 2)
+                    if px < 1_500_000:
+                        break
+                except Exception as e:
+                    traceback.print_exc()
+                    error = e
+                    break
+        finally:
+            QApplication.restoreOverrideCursor()
+        QMessageBox.warning(self, "Couldn't finish the photo",
+                            f"{type(error).__name__}: {error}\n\nTry again with a lower resolution (the "
+                            "picture size question when you press Edit photo).")
+        return None, None
+
     def _accept(self):
-        changed = self.alpha is not None or not photofx.is_default_light(self.light)
+        changed = self.alpha is not None or not photofx.is_default_light(self.light) or bool(self.light_map.any())
         if changed:
+            image, note = self._export_safely()
+            if image is None:
+                return                     # stay in the editor; nothing is lost
+            self.result_image = image
             self.result_state = {
                 "alpha": None if self.alpha is None else self.alpha.copy(),
-                "bg": self.bg, "feather": self.feather, "shrink": self.shrink, "light": dict(self.light),
+                "bg": self.bg, "feather": self.feather, "shrink": self.shrink, "sharp": self.sharp,
+                "box": self.box,
+                "light": dict(self.light),
+                "light_map": self.light_map.copy(), "edge_map": self.edge_map.copy(),
             }
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            try:
-                self.result_image = self._export()
-            finally:
-                QApplication.restoreOverrideCursor()
+            if note:
+                QMessageBox.information(self, "Photo made smaller", note)
         self.accept()

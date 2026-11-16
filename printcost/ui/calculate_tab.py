@@ -28,7 +28,7 @@ from printcost.ui.idphoto_dialog import IdPhotoDialog
 from printcost.ui.layout_preview_dialog import SheetsPreviewDialog, BookPreviewDialog
 from printcost.ui.help import HelpButton, with_help
 from printcost.ui.notes import label_style, notice
-from printcost.ui.style import MAGENTA_DARK
+from printcost.ui.style import MAGENTA_DARK, ElidedLabel
 
 INK_TINTS = ["#e0f4fb", "#fde4f2", "#fff7c9", "#e9edf2"]
 
@@ -171,7 +171,7 @@ class CalculateTab(QWidget):
         drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         left_layout.addWidget(drop_hint)
 
-        self.file_label = QLabel("No file selected")
+        self.file_label = ElidedLabel("No file selected")
         self.file_label.setObjectName("muted")
         self.file_label.setWordWrap(True)
         left_layout.addWidget(self.file_label)

@@ -1,5 +1,33 @@
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPainter
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QLabel, QSizePolicy, QWidget
+
+
+class ElidedLabel(QLabel):
+    """Shortens long text to "abc…xyz.pdf" instead of making its panel wider. Hover shows the full text."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0)
+        self.setText(text)
+
+    def setText(self, text):
+        self._full = text or ""
+        self.setToolTip(self._full)
+        self._elide()
+
+    def text(self):
+        return self._full
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self):
+        QLabel.setText(self, self.fontMetrics().elidedText(
+            self._full, Qt.TextElideMode.ElideMiddle, max(10, self.width())))
 
 BG = "#f3f6fa"
 CARD_BG = "#ffffff"
