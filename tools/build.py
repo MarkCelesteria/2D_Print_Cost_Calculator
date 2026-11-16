@@ -13,6 +13,8 @@ SETUP_NAME = APP_NAME + "-Setup.exe"
 ICON_PATH = os.path.join("assets", "app.ico")
 VERSION_FILE = os.path.join("assets", "version_info.txt")
 ISS_PATH = os.path.join("tools", "installer.iss")
+MODEL_PATH = os.path.join("assets", "modnet.onnx")
+MODEL_URL = "https://huggingface.co/Xenova/modnet/resolve/main/onnx/model.onnx"
 
 
 def read_version():
@@ -69,6 +71,16 @@ def make_version_file(version, path=VERSION_FILE):
         f.write(text)
 
 
+def ensure_model():
+    if os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) > 20 * 1024 * 1024:
+        return
+    import urllib.request
+    print("\nDownloading the background remover model (one time)...")
+    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH + ".part")
+    os.replace(MODEL_PATH + ".part", MODEL_PATH)
+
+
 def find_iscc():
     found = shutil.which("iscc")
     if found:
@@ -122,8 +134,10 @@ def main():
         shutil.rmtree(folder, ignore_errors=True)
     make_icon()
     make_version_file(version)
+    ensure_model()
     run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir", "--windowed",
-         "--icon", ICON_PATH, "--version-file", VERSION_FILE, "--name", APP_NAME, "main.py"])
+         "--icon", ICON_PATH, "--version-file", VERSION_FILE, "--name", APP_NAME,
+         "--add-data", f"{MODEL_PATH}{os.pathsep}models", "--collect-binaries", "onnxruntime", "main.py"])
 
     exe = os.path.join("dist", APP_NAME, EXE_NAME)
     if not os.path.exists(exe):

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF, QSize, QTimer
 from PyQt6.QtGui import QPainter, QColor, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QGridLayout, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QSpinBox, QDoubleSpinBox,
@@ -16,6 +16,7 @@ from printcost.core import pricing
 from printcost.core.analyzer import IMAGE_EXTS, load_image_rgb, make_temp_dir
 from printcost.ui.icons import make_icon
 from printcost.ui.idphoto_editor import LayoutEditorDialog
+from printcost.ui.photo_edit_dialog import PhotoEditDialog
 from printcost.ui.notes import label_style
 from printcost.ui.preview_widget import pil_to_qpixmap
 from printcost.ui.style import BORDER, MUTED, PREVIEW_BG, PRIMARY, MAGENTA
@@ -447,6 +448,23 @@ class IdPhotoDialog(QDialog):
         src_row.addWidget(self.source_label, 1)
         src_row.addWidget(change)
         v.addLayout(src_row)
+        self.edit_btn = QPushButton("Edit photo…")
+        self.edit_btn.setObjectName("secondary")
+        self.edit_btn.setToolTip("Remove the background, change its color, fix the lighting")
+        self.edit_btn.clicked.connect(self._edit_photo)
+        v.addWidget(self.edit_btn)
+
+        pos_row = QHBoxLayout()
+        self.pos_btn = QPushButton("Position the face…")
+        self.pos_btn.setObjectName("secondary")
+        self.pos_btn.setToolTip("Choose which part of the picture is used, and how close")
+        self.pos_btn.clicked.connect(self._position)
+        self.pos_reset = QPushButton("Reset")
+        self.pos_reset.setObjectName("secondary")
+        self.pos_reset.clicked.connect(lambda: self._set_focus(idphoto.DEFAULTS["focus"]))
+        pos_row.addWidget(self.pos_btn, 1)
+        pos_row.addWidget(self.pos_reset)
+        v.addLayout(pos_row)
 
         set_row = QHBoxLayout()
         set_row.setSpacing(6)
@@ -511,18 +529,6 @@ class IdPhotoDialog(QDialog):
                                    "With a gap of 0, small photos fill the exact space of a bigger one.")
         self.easy_check.setChecked(bool(remembered["easy"]))
         v.addWidget(self.easy_check)
-
-        pos_row = QHBoxLayout()
-        self.pos_btn = QPushButton("Position the face…")
-        self.pos_btn.setObjectName("secondary")
-        self.pos_btn.setToolTip("Choose which part of the picture is used, and how close")
-        self.pos_btn.clicked.connect(self._position)
-        self.pos_reset = QPushButton("Reset")
-        self.pos_reset.setObjectName("secondary")
-        self.pos_reset.clicked.connect(lambda: self._set_focus(idphoto.DEFAULTS["focus"]))
-        pos_row.addWidget(self.pos_btn, 1)
-        pos_row.addWidget(self.pos_reset)
-        v.addLayout(pos_row)
 
         hand_row = QHBoxLayout()
         self.hand_btn = QPushButton("Arrange by hand…")
@@ -679,6 +685,8 @@ class IdPhotoDialog(QDialog):
         self._manual_key = self._geom_key()
         self._busy = False
         self._refresh()
+        if job is None:
+            QTimer.singleShot(0, self._position)
 
     # ---------------- helpers ----------------
 
@@ -713,7 +721,7 @@ class IdPhotoDialog(QDialog):
             "paper": {"name": p["name"], "width_in": p["width_in"], "height_in": p["height_in"]},
         }
 
-    def _set_source(self, path):
+    def _set_source(self, path, edited=False):
         try:
             img = load_image_rgb(path)
         except Exception as e:
@@ -723,7 +731,9 @@ class IdPhotoDialog(QDialog):
         thumb = img.copy()
         thumb.thumbnail((THUMB_PX, THUMB_PX))
         self.img, self.src, self.path = thumb, img, path
-        self.source_label.setText(os.path.basename(path))
+        if not edited:
+            self.orig_path, self.edit_state = path, None
+        self.source_label.setText(os.path.basename(self.orig_path) + (" (edited)" if edited else ""))
         return True
 
     def done(self, code):
@@ -865,9 +875,30 @@ class IdPhotoDialog(QDialog):
     # ---------------- picture ----------------
 
     def _change_source(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Choose a photo", os.path.dirname(self.path), PICK_FILTER)
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a photo", os.path.dirname(self.orig_path), PICK_FILTER)
         if path and self._set_source(path):
             self._reset_options()
+            self._position()
+
+    def _edit_photo(self):
+        try:
+            base = load_image_rgb(self.orig_path)
+        except Exception as e:
+            QMessageBox.warning(self, "Can't use this file", str(e))
+            return
+        dlg = PhotoEditDialog(self, base, self.edit_state)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+        if dlg.result_image is None:
+            self._set_source(self.orig_path)
+        else:
+            name = os.path.splitext(os.path.basename(self.orig_path))[0] + " (edited).png"
+            path = os.path.join(make_temp_dir(), name)
+            dlg.result_image.save(path, "PNG", compress_level=1)
+            if not self._set_source(path, edited=True):
+                return
+            self.edit_state = dlg.result_state
+        self._refresh()
 
     def _reset_options(self):
         """Back to the defaults (used when a different photo is chosen). Only the pricing is kept."""

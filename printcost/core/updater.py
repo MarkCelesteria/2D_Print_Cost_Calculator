@@ -8,7 +8,7 @@ import urllib.request
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 REPO = "MarkCelesteria/2D_Print_Cost_Calculator"
 ASSET_NAME = "PrintCostCalculator-Setup.exe"
 API_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
