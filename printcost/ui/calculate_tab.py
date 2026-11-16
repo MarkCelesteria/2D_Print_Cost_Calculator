@@ -345,13 +345,23 @@ class CalculateTab(QWidget):
         self.pages_input.textChanged.connect(self._on_pages_changed)
         opts_layout.addWidget(self.pages_input, 4, 1, 1, 5)
 
-        for i, (key, label) in enumerate(PCT_LABELS):
-            r, c = 5 + i // 3, (i % 3) * 2
-            opts_layout.addWidget(QLabel(label), r, c)
-            field = QLineEdit(str(self.settings["default_percentages"][key]))
-            field.setFixedWidth(60)
+        self.pct_combo = QComboBox()
+        self.pct_edit = QLineEdit()
+        self.pct_edit.setFixedWidth(60)
+        for key, label in PCT_LABELS:
+            field = QLineEdit(str(self.settings["default_percentages"][key]), self)  # hidden: holds the value
+            field.hide()
             self.pct_inputs[key] = field
-            opts_layout.addWidget(field, r, c + 1)
+            self.pct_combo.addItem(label)
+        for field in self.pct_inputs.values():
+            field.textChanged.connect(self._sync_pct)
+        self.pct_combo.currentIndexChanged.connect(self._sync_pct)
+        self.pct_edit.textChanged.connect(self._pct_edited)
+        self._sync_pct()
+        opts_layout.addWidget(QLabel("Percentages"), 5, 0)
+        opts_layout.addWidget(self.pct_combo, 5, 1, 1, 3)
+        opts_layout.addWidget(self.pct_edit, 5, 4)
+        opts_layout.addWidget(QLabel("%"), 5, 5)
 
         self.results_scroll = QScrollArea()
         self.results_scroll.setWidgetResizable(True)
@@ -362,6 +372,16 @@ class CalculateTab(QWidget):
         self.results_scroll.setWidget(self.results_container)
         right_col.addWidget(self.results_scroll, 1)
         self._update_input_states()
+
+    def _sync_pct(self, *_):
+        for i, (key, label) in enumerate(PCT_LABELS):
+            self.pct_combo.setItemText(i, f"{label.replace(' %', '')}:  {self.pct_inputs[key].text()}%")
+        key = PCT_LABELS[self.pct_combo.currentIndex()][0]
+        if self.pct_edit.text() != self.pct_inputs[key].text():
+            self.pct_edit.setText(self.pct_inputs[key].text())
+
+    def _pct_edited(self, text):
+        self.pct_inputs[PCT_LABELS[self.pct_combo.currentIndex()][0]].setText(text)
 
     def refresh_settings(self, settings):
         self.settings = settings
@@ -440,8 +460,11 @@ class CalculateTab(QWidget):
         self.paper_combo.clear()
         names = [p["name"] for p in self.settings["paper_sizes"]]
         self.paper_combo.addItems(names)
+        default = next((n for n in names if n.startswith("Short")), None)
         if current in names:
             self.paper_combo.setCurrentText(current)
+        elif default:
+            self.paper_combo.setCurrentText(default)
         self.paper_combo.blockSignals(False)
         self._update_paper_note()
 
@@ -748,10 +771,20 @@ class CalculateTab(QWidget):
         blank = self.blank_covers_box.isChecked()
         if self.layout_mode == "duplex":
             dialog = SheetsPreviewDialog(self.resolved_pdf_path, page_layout.duplex_order(count, blank),
-                                         self._current_mode(), self._duplex_values()["flip"], self)
+                                         self._current_mode(), self._duplex_values()["flip"], self,
+                                         paper=self._current_paper())
         else:
             dialog = BookPreviewDialog(self._layout_base, page_layout.arrange(count, 4, blank),
-                                       self._current_mode(), self)
+                                       self._current_mode(), self, sheets_cb=self._open_booklet_sheets)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def _open_booklet_sheets(self):
+        """Booklet as printed: every sheet's front and back on bond paper."""
+        count = get_pdf_page_count(self._layout_base)
+        sides = page_layout.booklet_sides(count, self.blank_covers_box.isChecked())
+        dialog = SheetsPreviewDialog(self.resolved_pdf_path, sides, self._current_mode(),
+                                     self._duplex_values()["flip"], self, booklet=True)
         dialog.exec()
         dialog.deleteLater()
 

@@ -1070,6 +1070,13 @@ class FullPreviewDialog(QDialog):
 
         self._start_worker()
         self.showFullScreen()
+        QTimer.singleShot(0, self._fill_screen)
+
+    def _fill_screen(self):
+        """Fractional display scaling can leave a thin strip uncovered; cover the whole screen exactly."""
+        screen = self.screen().geometry()
+        if self.geometry() != screen:
+            self.setGeometry(screen)
 
     # ---------------- rendering ----------------
 

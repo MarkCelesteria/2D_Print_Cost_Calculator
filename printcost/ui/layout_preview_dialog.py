@@ -2,7 +2,7 @@ import math
 
 import fitz
 from PyQt6.QtCore import QEasingCurve, QEvent, QRectF, QSize, Qt, QTimer, QVariantAnimation, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtGui import QColor, QKeySequence, QPainter, QPen, QShortcut
 from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
 )
@@ -11,9 +11,31 @@ from printcost.ui.full_preview_dialog import (
     RenderAllPagesWorker, WHEEL_SENSITIVITY, ZOOM_ANIM_MS, ZOOM_MIN, ZOOM_STEP,
 )
 from printcost.ui.preview_widget import pil_to_qpixmap
-from printcost.ui.style import BORDER, MUTED, PREVIEW_BG
+from printcost.ui.style import BORDER, MAGENTA, MUTED, PREVIEW_BG
 
 NOTHING = -1  # no leaf at all (outside the covers); None is a blank page
+
+
+class PaperLabel(QLabel):
+    """A sheet of bond paper: outlined, with a dashed fold line down the middle for booklets."""
+
+    def __init__(self, text="", fold=False):
+        super().__init__(text)
+        self.fold = fold
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        pm = self.pixmap()
+        if pm is None or pm.isNull():
+            return
+        p = QPainter(self)
+        p.setPen(QPen(QColor("#94a3b8"), 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(0, 0, self.width() - 1, self.height() - 1)
+        if self.fold:
+            p.setPen(QPen(QColor(MAGENTA), 1, Qt.PenStyle.DashLine))
+            p.drawLine(self.width() // 2, 0, self.width() // 2, self.height())
+        p.end()
 
 
 class LayoutPreviewBase(QDialog):
@@ -109,6 +131,12 @@ class LayoutPreviewBase(QDialog):
         self._rerender_timer.timeout.connect(self._start_worker)
         self._start_worker()
         self.showFullScreen()
+        QTimer.singleShot(0, self._fill_screen)
+
+    def _fill_screen(self):
+        screen = self.screen().geometry()
+        if self.geometry() != screen:
+            self.setGeometry(screen)
 
     # subclasses
     def build_body(self):
@@ -129,7 +157,7 @@ class LayoutPreviewBase(QDialog):
             self.worker.abort = True
             self.worker.page_ready.disconnect(self._on_worker_page)
         self.worker = RenderAllPagesWorker(self.pdf_path, self.pdf_pages, self.zoom, self.mode,
-                                           order=self.render_pages)
+                                           order=self.render_pages, fit_paper=getattr(self, "fit_paper", None))
         self.worker.page_ready.connect(self._on_worker_page)
         self._workers.append(self.worker)
         self.worker.start()
@@ -217,12 +245,16 @@ class LayoutPreviewBase(QDialog):
 class SheetsPreviewDialog(LayoutPreviewBase):
     """Back-to-back: every sheet is one row, the front on the left and its back on the right."""
 
-    def __init__(self, pdf_path, order, mode="color", flip="long", parent=None):
+    def __init__(self, pdf_path, order, mode="color", flip="long", parent=None, paper=None, booklet=False):
         self.order = order
         self._fit = 1.0
-        info = (f"Each row is one sheet: the front on the left, its back on the right. "
-                f"After the fronts print, flip the whole stack on the {flip} edge.")
-        super().__init__(pdf_path, range(len(order)), mode, "Back-to-back preview  ·  Ctrl + scroll to zoom",
+        self.fit_paper = paper
+        self.booklet = booklet
+        info = (f"Bond paper view. Each row is one sheet: the front on the left, its back on the right "
+                f"(turned over like a page). After the fronts print, flip the whole stack on the {flip} edge."
+                + (" Fold the sheets in half on the dashed line." if booklet else ""))
+        title = "Booklet" if booklet else "Back-to-back"
+        super().__init__(pdf_path, range(len(order)), mode, f"{title} bond paper preview  ·  Ctrl + scroll to zoom",
                          info, parent)
 
     def build_body(self):
@@ -241,11 +273,15 @@ class SheetsPreviewDialog(LayoutPreviewBase):
                 if i >= len(self.order):
                     continue
                 cell = QVBoxLayout()
-                page = QLabel(f"Loading page {i + 1}...")
+                page = PaperLabel(f"Loading page {i + 1}...", self.booklet)
                 page.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 page.setScaledContents(True)
                 page.setMinimumHeight(200)
-                what = "blank" if self.order[i] is None else f"page {self.order[i] + 1}"
+                entry = self.order[i]
+                if self.booklet:
+                    what = "pages " + " and ".join("blank" if p is None else str(p + 1) for p in entry)
+                else:
+                    what = "blank" if entry is None else f"page {entry + 1}"
                 caption = QLabel(f"Sheet {sheet + 1}  ·  {'Front' if side == 0 else 'Back'}  ·  {what}")
                 caption.setAlignment(Qt.AlignmentFlag.AlignHCenter)
                 cell.addWidget(page, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -261,6 +297,10 @@ class SheetsPreviewDialog(LayoutPreviewBase):
         self.labels[index].setText("")
         self._refit()
 
+    def ready(self):
+        self._refit()
+        QTimer.singleShot(0, self._refit)
+
     def _size_page(self, index):
         pm, rendered = self._pixmaps[index]
         ratio = self.zoom / rendered * self._fit
@@ -268,7 +308,7 @@ class SheetsPreviewDialog(LayoutPreviewBase):
 
     def _refit(self):
         widest = max((pm.width() / z for pm, z in self._pixmaps.values()), default=0)
-        if widest:
+        if widest and self.stack.currentIndex() == 1:
             self._fit = min(1.0, (self.scroll.viewport().width() - 100) / 2 / widest)
         for i in self._pixmaps:
             self._size_page(i)
@@ -323,10 +363,18 @@ class BookView(QWidget):
         return f"{' and '.join(names)}  ({self.spread + 1} of {self.spreads})"
 
     def go(self, delta):
+        rapid = self._flip is not None
+        if rapid:
+            self._anim.stop()
+            self.spread = self._flip[1]
+            self._flip = None
+            self.changed.emit()
         target = self.spread + delta
-        if self._flip is not None or not 0 <= target < self.spreads:
+        if not 0 <= target < self.spreads:
+            self.update()
             return
         self._flip = (self.spread, target, 0.0)
+        self._anim.setDuration(150 if rapid else 420)
         self._anim.start()
 
     def _tick(self, value):
@@ -334,6 +382,8 @@ class BookView(QWidget):
         self.update()
 
     def _done(self):
+        if self._flip is None:
+            return
         self.spread = self._flip[1]
         self._flip = None
         self.update()
@@ -393,7 +443,7 @@ class BookView(QWidget):
 class BookPreviewDialog(LayoutPreviewBase):
     """Booklet: the pages in reading order as an open book. Click a page or use the arrow keys to flip."""
 
-    def __init__(self, pdf_path, pages, mode="color", parent=None):
+    def __init__(self, pdf_path, pages, mode="color", parent=None, sheets_cb=None):
         self.pages = pages
         with fitz.open(pdf_path) as doc:
             first = doc[next(p for p in pages if p is not None)].rect
@@ -414,6 +464,15 @@ class BookPreviewDialog(LayoutPreviewBase):
         self.footer.addWidget(self.prev_btn)
         self.footer.addWidget(self.caption, 1)
         self.footer.addWidget(self.next_btn)
+        if sheets_cb:
+            sheets_btn = QPushButton("Bond paper view")
+            sheets_btn.setObjectName("secondary")
+            sheets_btn.setToolTip("See each sheet as it prints: front and back")
+            sheets_btn.clicked.connect(lambda: sheets_cb())
+            self.footer.addWidget(sheets_btn)
+        for keys, step in ((("Left", "PgUp"), -1), (("Right", "PgDown"), 1)):
+            for key in keys:
+                QShortcut(QKeySequence(key), self).activated.connect(lambda s=step: self.book.go(s))
         self._refresh()
 
     def build_body(self):
