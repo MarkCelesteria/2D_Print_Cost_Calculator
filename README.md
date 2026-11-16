@@ -1,31 +1,64 @@
-# Print Cost Calculator (PyQt6 version)
+# Print Cost Calculator (PyQt6)
 
-Estimates the printing cost of a PDF or Word (.docx) file based on how much
-of each ink color (Cyan, Magenta, Yellow, Black) the document actually uses
-— so an all-yellow page costs less than an all-green page, since green needs
-more ink channels mixed together. White space costs nothing — it converts
-to 0% on every channel automatically, it's never counted and then filtered
-out after the fact.
+Estimates the printing cost of a PDF, Word (.docx) file or image from how much
+of each ink color (Cyan, Magenta, Yellow, Black) the document actually uses,
+so an all-yellow page costs less than an all-green page. White space costs
+nothing: it converts to 0% on every channel, so it is never counted.
 
-## What's in this version
+Current version: see `APP_VERSION` in `printcost/core/updater.py`.
 
-- **PyQt6 interface** — real native widgets and styling (QSS), not Tkinter.
-- **First-page preview only** — shows a thumbnail of just the first page
-  when you pick a file (PDF always; .docx too if LibreOffice is installed).
-- **One-way scanning animation** — a line sweeps downward across the preview
-  while analyzing, and stops the instant the result is ready — for a quick
-  file it may only get partway (e.g. ~1/4 down) before snapping to done.
-- **Five separate cost percentages**: Labor, Maintenance, Electricity,
-  Spoilage, Profit — each applied independently to the ink+paper subtotal
-  and shown as its own line in the results.
-- **Per-page color usage table** — every page's Cyan/Magenta/Yellow/Black
-  percentage and ink cost, listed individually, with white already excluded
-  by the math (not filtered afterward).
-- **Native system tray** — closing the window minimizes it to the tray
-  instead of quitting; click the tray icon to bring it back instantly.
-- **Poster mode** — slice one picture or PDF page into a grid of sheets (see below).
-- **Right-click "Calculate Print Cost"** context menu integration (optional,
-  see `add_context_menu.reg`).
+## Features
+
+- **Per-page color usage** — every page's Cyan / Magenta / Yellow / Black percentage and ink cost, listed individually.
+- **Paper sizes and types** — Short, Long, Legal, A4/A5/A6, photo sizes (3R to 10R); plain, matte, glossy, semi-gloss, cardstock and sticker paper. Each paper type has its own price factor and ink factor.
+- **Print quality** — draft / standard / high multipliers, and a black-mix setting for high quality.
+- **Pricing rules** — six percentages (labor, maintenance, electricity, spoilage, printer, profit), minimum price per page (separate minimum for color pages), maximum price per page, a color threshold, discounts and page-count (bulk) discounts.
+- **Page ranges** — price only the pages you select.
+- **Full preview and editor** — zoomable preview of every page; in edit mode you can move, resize, crop, copy/paste and delete images (see below).
+- **Poster mode** — slice one picture or PDF page into a grid of sheets.
+- **Double-sided and booklet layouts** — back-to-back and booklet page ordering, blank covers, per-printer flip settings, and an alignment test page.
+- **ID photo sheets** — pack photos of several sizes (1×1, 2×2, passport, stamp, wallet, custom) onto one sheet, with cut lines and optional signature strips.
+- **Receipt and printing** — receipt image / PDF with your shop name (and permit/TIN if set), and direct printing.
+- **System tray** — closing the window hides it to the tray; click the tray icon to bring it back.
+- **Single instance** — opening a second copy (or a file) hands over to the running one. If the running copy is older, you are asked whether to replace it.
+- **Start with Windows** — optional; starts minimized in the tray.
+- **Automatic updates** — checks GitHub releases daily, verifies the download's checksum, and the installed Windows app can update itself.
+- **Right-click "Calculate Print Cost"** — optional, see `docs/add_context_menu.reg`.
+
+## Full preview editor
+
+Click **Edit** in the full preview to edit images in the PDF. Images that are rotated or inline can't be edited and show no selection border.
+
+**Selecting**
+
+- Click an image to select it.
+- Ctrl+click toggles an image, Shift+click adds one.
+- Drag on empty space to draw a selection box; while you drag, everything that can be picked gets a soft dotted border.
+- Selection works within one page. Copy, Crop and Position act on one image at a time.
+
+**Shortcuts** (edit mode)
+
+| Keys | Action |
+|---|---|
+| Arrows / Shift+arrows | Nudge the selection 1 px / 10 px (Ctrl+arrows also work). With nothing selected, the arrows scroll. |
+| Ctrl+D | Duplicate |
+| Ctrl+A | Select all images on the current page |
+| Ctrl+C / Ctrl+X / Ctrl+V | Copy / cut / paste (one image at a time for copy and cut) |
+| Delete / Backspace | Delete the selection |
+| Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) | Undo / redo |
+| Ctrl+] / Ctrl+[ | Bring to front / send to back |
+| Ctrl+O | Add images |
+| Esc | Deselect (or cancel a crop) |
+
+**Anywhere in the preview**
+
+| Keys | Action |
+|---|---|
+| Ctrl+S | Export the PDF |
+| Ctrl++ / Ctrl+- / Ctrl+0 | Zoom in / out / reset |
+| Ctrl+Home / Ctrl+End | First / last page |
+
+Moving, duplicating, deleting or reordering a group of images is one edit and one undo step.
 
 ## Project files
 
@@ -34,18 +67,21 @@ print_cost_calculator/
   main.py                  <- start here (python main.py)
   requirements.txt
   printcost/
-    app.py                 <- window shell, system tray, splash
+    app.py                 <- window shell, system tray, splash, updates
     core/                  <- logic and services
       analyzer.py          <- CMYK conversion, PDF/DOCX rendering, cost math
-      pricing.py           <- settings persistence (settings.json)
+      pricing.py           <- settings (settings.json) and discount tiers
       poster.py            <- poster slicing, preview image, poster pricing
+      layout.py            <- double-sided and booklet page ordering
+      idphoto.py           <- ID photo sheet packing
       pdf_editor.py        <- editing pages and images in a PDF
       updater.py           <- checks GitHub and updates the exe
+      single_instance.py   <- one running copy, hand-over of files
       autostart.py         <- start with Windows
       worker.py            <- background threads for loading and analysis
     ui/                    <- everything the user sees
       calculate_tab.py     <- file picker, preview, options, results
-      settings_tab.py      <- paper sizes, ink prices, percentages
+      settings_tab.py      <- paper sizes, ink prices, percentages, discounts
       full_preview_dialog.py <- full preview and the editor
       poster_dialog.py     <- the Poster window
       preview_widget.py    <- first-page thumbnail and spinner
@@ -56,6 +92,9 @@ print_cost_calculator/
   docs/                    <- BUILD_EXE.md, add_context_menu.reg
 ```
 
+Settings are saved in `settings.json` next to `main.py` when run from source, and in
+`%APPDATA%\PrintCostCalculator` for the packaged exe.
+
 ## Setup
 
 ```bash
@@ -63,15 +102,17 @@ pip install -r requirements.txt
 python main.py
 ```
 
-For accurate `.docx` analysis (and preview), also install **LibreOffice**
-(free) so the app can render the document exactly as it would print:
-- Windows/Mac: https://www.libreoffice.org/download/
-- Auto-detected (`soffice`/`libreoffice` on PATH). Without it, `.docx`
-  falls back to a rough estimate (embedded images analyzed properly, body
-  text assumed a flat ~5% black coverage, no preview thumbnail).
+Command line: `python main.py [file]` opens a file and calculates it; `--minimized` starts in the
+tray; `--quit` closes the running copy.
 
-`.pdf` files are always analyzed and previewed precisely — no LibreOffice
-needed.
+For accurate `.docx` analysis (and preview), also install **LibreOffice** (free) so the app can render
+the document exactly as it would print:
+
+- Windows/Mac: https://www.libreoffice.org/download/
+- Auto-detected (`soffice` / `libreoffice` on PATH). Without it, `.docx` falls back to a rough estimate
+  (embedded images analyzed properly, body text assumed a flat ~5% black coverage, no preview thumbnail).
+
+`.pdf` files are always analyzed and previewed precisely, no LibreOffice needed.
 
 ## Poster (tiled printing)
 
@@ -92,39 +133,53 @@ Press **Poster** next to *Browse files*. It uses the image / PDF already loaded,
 - Poster sheets print at 100% (not scaled to the printer's page). Turn off "Fit to page" in the printer's
   Preferences.
 
+## Double-sided and booklet printing
+
+- **Back-to-back** orders the pages for two-sided printing; **Booklet** puts two pages on each landscape side in folding order.
+- Optional blank covers keep the back of the front cover and the inside of the back cover empty.
+- For printers without automatic duplex, the app prints the front pass, then the back pass, and needs to know how you
+  reload the stack (flip over the long or short edge, and whether sheets come out face up or face down).
+  Print the **alignment test** page once to check, and the choice is remembered per printer.
+- Double-sided pricing can add an extra charge per sheet and/or a discount (Settings).
+
+## ID photos
+
+Pick a photo, add one or more sizes with a quantity for each, and the app packs them onto the chosen paper,
+choosing portrait or landscape to fit the most. Gap, margin and cut lines are adjustable. Pricing is calculated
+from the sheets used, or a flat fee. Photos that would print below about 150 DPI are flagged.
+
 ## Turning it into a real double-clickable app
 
-See `BUILD_EXE.md` — packages this into a single `.exe` with PyInstaller.
+See `docs/BUILD_EXE.md`: packages this into a single `.exe` with PyInstaller. The installer is released on GitHub
+as `PrintCostCalculator-Setup.exe`, which is what the updater downloads.
 
 ## Right-click "Calculate Print Cost" on any file
 
-See `add_context_menu.reg` — requires building the `.exe` first and editing
-the file path inside the `.reg` file before running it.
+See `docs/add_context_menu.reg`. Requires building the `.exe` first and editing the file path inside the `.reg`
+file before running it.
 
 ## How the cost math works
 
 ```
 page_ink_cost = (%Cyan × Cyan price) + (%Magenta × Magenta price)
               + (%Yellow × Yellow price) + (%Black × Black price)
+                (scaled by the paper type's ink factor and the print quality)
 
-subtotal = ink cost (all pages) + paper cost (price/sheet × pages)
+subtotal = ink cost (all pages) + paper cost (sheet price × paper type factor × sheets)
 
-labor_amount        = subtotal × (labor% / 100)
-maintenance_amount  = subtotal × (maintenance% / 100)
-electricity_amount  = subtotal × (electricity% / 100)
-spoilage_amount     = subtotal × (spoilage% / 100)
-profit_amount       = subtotal × (profit% / 100)
+each of labor, maintenance, electricity, spoilage, printer and profit
+  = subtotal × (its % / 100)
 
-total = subtotal + labor_amount + maintenance_amount
-                  + electricity_amount + spoilage_amount + profit_amount
+total = subtotal + labor + maintenance + electricity + spoilage + printer + profit
 ```
 
-## Known limitations (still the "simple version")
+Then the minimum / maximum price per page, the color threshold (pages below it count as black and white),
+and any discounts are applied. The exact rules are in `compute_cost` in `printcost/core/analyzer.py`.
 
-- Ink prices are per full page, flat regardless of paper size — only paper
-  cost scales with the sheet you pick.
-- `.docx` without LibreOffice uses a rough text-coverage estimate and shows
-  no preview thumbnail.
-- No Word/WPS add-in integration — standalone app, pick the file manually.
-- Renders at 150 DPI for speed; large/many-page PDFs may take a few seconds
-  — the scanning animation covers this wait.
+## Known limitations
+
+- Ink prices are per full page, flat regardless of paper size; only paper cost scales with the sheet you pick.
+- `.docx` without LibreOffice uses a rough text-coverage estimate and shows no preview thumbnail.
+- No Word/WPS add-in integration: standalone app, pick the file manually.
+- Renders at 150 DPI for speed; large or many-page PDFs may take a few seconds, and the scanning animation covers this wait.
+- The image editor only edits normal (unrotated, non-inline) images, and a selection stays on one page.
