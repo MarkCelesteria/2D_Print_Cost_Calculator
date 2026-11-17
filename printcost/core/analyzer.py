@@ -338,11 +338,19 @@ def is_image(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in IMAGE_EXTS
 
 
-def load_image_rgb(path: str) -> Image.Image:
+def has_transparency(img: Image.Image) -> bool:
+    if img.mode in ("RGBA", "LA"):
+        return img.getchannel("A").getextrema()[0] < 255
+    return img.mode == "P" and "transparency" in img.info
+
+
+def load_image_rgb(path: str, keep_alpha: bool = False) -> Image.Image:
     img = Image.open(path)
     img = ImageOps.exif_transpose(img)
-    if img.mode in ("RGBA", "LA", "P"):
+    if has_transparency(img):
         rgba = img.convert("RGBA")
+        if keep_alpha:
+            return rgba
         bg = Image.new("RGB", rgba.size, "white")
         bg.paste(rgba, mask=rgba.split()[3])
         return bg
@@ -387,7 +395,10 @@ def _place_image(page, img: Image.Image, rect, fill: bool):
         img.thumbnail((max_w, max_h), Image.LANCZOS)
 
     buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=92)
+    if img.mode == "RGBA":
+        img.save(buf, "PNG")
+    else:
+        img.save(buf, "JPEG", quality=92)
     page.insert_image(dest, stream=buf.getvalue())
 
 
@@ -409,7 +420,7 @@ def build_batch_pdf(paths, paper_w_in, paper_h_in, fill=False, per_page=1):
             imgs = []
             for p in pending[i:i + per_page]:
                 try:
-                    imgs.append(load_image_rgb(p))
+                    imgs.append(load_image_rgb(p, keep_alpha=True))
                 except Exception:
                     skipped.append(os.path.basename(p))
             if not imgs:

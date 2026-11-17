@@ -2,7 +2,7 @@ import io
 import os
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 try:
     import fitz
@@ -40,12 +40,15 @@ SETS = [
 DEFAULTS = {
     "entries": [{"name": "2×2 in", "w": 2.0, "h": 2.0, "qty": 6}],
     "orientation": "auto",      # auto | portrait | landscape
-    "gap_in": 0.1, "margin_in": 0.25, "lines": True,
+    "gap_in": 0.1, "margin_in": 0.25, "lines": False,
     "focus": (0.5, 0.5, 1.0),   # centre x, centre y (fractions of the picture), height (fraction)
     "easy": False,              # Easy cutting: every cut runs straight across the sheet
     "sig_pct": 20.0,            # signature strip height, % of the photo height
     "signature_path": None,
     "sig_name": "",             # optional name printed under the signature
+    "sig_size": 100,            # signature size, % of what fits the strip
+    "sig_dx": 0, "sig_dy": 0,   # signature offset, % of the strip's width / height (negative dy = up, over the photo)
+    "name_size": 100,           # name size, % of the default
     "pricing_mode": "calculated", "fee": 0.0,
 }
 
@@ -499,26 +502,32 @@ def _font(size):
         return ImageFont.load_default()
 
 
-def _draw_strip(cell, rect, sig, name):
-    """Signature (and name under it) centred in the white strip `rect` = (x0, y0, x1, y1) of the photo."""
+def _draw_strip(cell, rect, sig, name, spec=None):
+    """Signature (and name under it) in the white strip `rect` = (x0, y0, x1, y1) of the photo.
+    Size and offsets are shares of the strip, so they follow it when the strip grows or shrinks."""
+    spec = spec or {}
     x0, y0, x1, y1 = rect
     bw, bh = x1 - x0, y1 - y0
-    name_h = int(bh * 0.34) if name else 0
-    if sig is not None:
-        aw, ah = bw * 0.9, max(1, (bh - name_h) * 0.88)
-        k = min(aw / sig.width, ah / sig.height)
-        w, h = max(1, round(sig.width * k)), max(1, round(sig.height * k))
-        scaled = sig.resize((w, h), Image.LANCZOS if k < 1 else Image.BICUBIC)
-        cell.paste(scaled, (x0 + (bw - w) // 2, y0 + (bh - name_h - h) // 2))
+    draw = ImageDraw.Draw(cell)
+    size, font = 0, None
     if name:
-        draw = ImageDraw.Draw(cell)
-        size = max(6, int(name_h * 0.8))
+        size = max(6, int(bh * 0.36 * spec.get("name_size", 100) / 100))
         font = _font(size)
         while size > 6 and draw.textlength(name, font=font) > bw * 0.92:
             size -= 1
             font = _font(size)
-        tw = draw.textlength(name, font=font)
-        draw.text((x0 + (bw - tw) / 2, y1 - name_h + name_h * 0.05), name, fill=(0, 0, 0), font=font)
+    name_h = size
+    if sig is not None:
+        aw, ah = bw * 0.9, max(1, (bh - name_h) * 0.95)
+        k = min(aw / sig.width, ah / sig.height) * spec.get("sig_size", 100) / 100
+        w, h = max(1, round(sig.width * k)), max(1, round(sig.height * k))
+        scaled = sig.resize((w, h), Image.LANCZOS if k < 1 else Image.BICUBIC)
+        cx = x0 + bw / 2 + bw * spec.get("sig_dx", 0) / 100
+        cy = y0 + (bh - name_h) / 2 + bh * spec.get("sig_dy", 0) / 100
+        cell.paste((0, 0, 0), (round(cx - w / 2), round(cy - h / 2)), ImageOps.invert(scaled.convert("L")))
+    if name:
+        l, t, r, b = draw.textbbox((0, 0), name, font=font)
+        draw.text((x0 + (bw - (r - l)) / 2 - l, y1 - bh * 0.05 - b), name, fill=(0, 0, 0), font=font)
 
 
 def render_cell(img, entry, focus, spec, sig, ppi, resample=None):
@@ -535,9 +544,11 @@ def render_cell(img, entry, focus, spec, sig, ppi, resample=None):
     photo = img.resize((w_px, top_px), resample, box=box)
     if strip_px <= 0:
         return photo
-    cell = Image.new("RGB", (w_px, h_px), "white")
+    cell = Image.new("RGBA", (w_px, h_px), (0, 0, 0, 0)) if photo.mode == "RGBA" else Image.new("RGB", (w_px, h_px), "white")
     cell.paste(photo, (0, 0))
-    _draw_strip(cell, (0, top_px, w_px, h_px), sig, spec.get("sig_name", ""))
+    if cell.mode == "RGBA":
+        cell.paste((255, 255, 255, 255), (0, top_px, w_px, h_px))
+    _draw_strip(cell, (0, top_px, w_px, h_px), sig, spec.get("sig_name", ""), spec)
     return cell
 
 
@@ -565,7 +576,8 @@ def preview_sheet(img, spec, landscape, sheets, index, max_px=520, sig=None, res
     for x, y, w, h, idx in sheets[index]:
         if idx not in cache:
             cache[idx] = render_cell(img, spec["entries"][idx], spec["focus"], spec, sig, s, resample)
-        canvas.paste(cache[idx], (round(x * s), round(y * s)))
+        cell = cache[idx]
+        canvas.paste(cell, (round(x * s), round(y * s)), cell if cell.mode == "RGBA" else None)
     if spec.get("lines"):
         for (x1, y1), (x2, y2) in cut_segments(spec, sheets[index]):
             draw.line([round(x1 * s), round(y1 * s), round(x2 * s), round(y2 * s)], fill=(190, 190, 190))
@@ -587,6 +599,10 @@ def render_sheet(img, spec, landscape, sheets, index, sig=None, ppi=EXPORT_PPI):
 def save_image(im, path, ppi=EXPORT_PPI):
     """PNG, or JPEG when the name ends in .jpg / .jpeg. The dpi is stored so it prints at the right size."""
     if os.path.splitext(path)[1].lower() in (".jpg", ".jpeg"):
+        if im.mode == "RGBA":
+            flat = Image.new("RGB", im.size, "white")
+            flat.paste(im, mask=im.getchannel("A"))
+            im = flat
         im.convert("RGB").save(path, "JPEG", quality=95, subsampling=0, dpi=(ppi, ppi))
     else:
         im.save(path, "PNG", dpi=(ppi, ppi))
@@ -640,7 +656,7 @@ def build_pdf(source_path, spec):
     err = validate(spec)
     if err:
         raise AnalysisError(err)
-    img = load_image_rgb(source_path)
+    img = load_image_rgb(source_path, keep_alpha=True)
     sig = load_signature(spec["signature_path"]) if spec.get("signature_path") else None
     landscape, sheets = best_plan(spec)
     sw, sh = sheet_size(spec["paper"], landscape)
@@ -652,8 +668,11 @@ def build_pdf(source_path, spec):
             for x, y, w, h, idx in placed:
                 if idx not in streams:
                     buf = io.BytesIO()
-                    render_cell(img, spec["entries"][idx], spec["focus"], spec, sig, IMAGE_DPI).save(
-                        buf, "JPEG", quality=95, dpi=(300, 300))
+                    cell = render_cell(img, spec["entries"][idx], spec["focus"], spec, sig, IMAGE_DPI)
+                    if cell.mode == "RGBA":
+                        cell.save(buf, "PNG", dpi=(300, 300))
+                    else:
+                        cell.save(buf, "JPEG", quality=95, dpi=(300, 300))
                     streams[idx] = buf.getvalue()
                 pg.insert_image(fitz.Rect(x * 72, y * 72, (x + w) * 72, (y + h) * 72), stream=streams[idx])
             if spec.get("lines"):

@@ -1,3 +1,5 @@
+import numpy as np
+from PIL import Image
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QColor, QPen
 from PyQt6.QtCore import Qt, QTimer
@@ -8,7 +10,19 @@ PREVIEW_SIZE = (260, 340)
 SPINNER_SIZE = 64
 
 
+def _on_checker(img, tile=10):
+    rgba = img.convert("RGBA")
+    w, h = rgba.size
+    yy, xx = np.mgrid[0:h, 0:w]
+    shade = np.where(((xx // tile) + (yy // tile)) % 2 == 0, 255, 226).astype(np.uint8)
+    base = Image.fromarray(np.dstack([shade] * 3))
+    base.paste(rgba, mask=rgba.getchannel("A"))
+    return base
+
+
 def pil_to_qpixmap(pil_img):
+    if pil_img.mode in ("RGBA", "LA"):
+        pil_img = _on_checker(pil_img)
     pil_img = pil_img.convert("RGB")
     data = pil_img.tobytes("raw", "RGB")
     qimg = QImage(data, pil_img.width, pil_img.height, pil_img.width * 3, QImage.Format.Format_RGB888)

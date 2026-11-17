@@ -1,6 +1,7 @@
 import numpy as np
 from PIL import Image, ImageFilter
 
+TRANSPARENT = "transparent"
 WORK_PX = 1000
 MAX_EXPORT_PX = 16_000_000    # the edited picture keeps its own size up to this many pixels (16 MP)
 LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
@@ -381,6 +382,24 @@ def _decontaminate(rgb, alpha):
     use = np.clip((0.97 - alpha) / 0.07, 0.0, 1.0) * (weight > 0.03)
     fg = rgb.astype(np.float32)
     return fg + (est - fg) * use[..., None]
+
+
+def compose_transparent(rgb, alpha, clean=True):
+    h, w = rgb.shape[:2]
+    if alpha.shape != (h, w):
+        alpha = np.clip(np.asarray(Image.fromarray(alpha).resize((w, h), Image.BICUBIC), dtype=np.float32), 0.0, 1.0)
+    fg = _decontaminate(rgb, alpha) if clean else rgb.astype(np.float32)
+    out = np.concatenate([np.clip(fg, 0.0, 255.0), alpha[..., None] * 255.0], axis=2)
+    return (out + 0.5).astype(np.uint8)
+
+
+def over_checker(rgba, tile=12, origin=(0, 0)):
+    h, w = rgba.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w]
+    xx, yy = xx + origin[0], yy + origin[1]
+    shade = np.where(((xx // tile) + (yy // tile)) % 2 == 0, 255.0, 225.0)[..., None]
+    a = rgba[..., 3:4].astype(np.float32) / 255.0
+    return ((rgba[..., :3] * a + shade * (1 - a)) + 0.5).astype(np.uint8)
 
 
 def compose(rgb, alpha, bg, clean=True):

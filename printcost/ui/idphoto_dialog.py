@@ -56,6 +56,15 @@ class NoWheelDouble(QDoubleSpinBox):
         super().wheelEvent(event) if self.hasFocus() else event.ignore()
 
 
+class NoWheelSlider(QSlider):
+    def __init__(self, parent=None):
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event):
+        super().wheelEvent(event) if self.hasFocus() else event.ignore()
+
+
 class NoWheelCombo(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -594,6 +603,10 @@ class IdPhotoDialog(QDialog):
         strip.addWidget(self.sig_pct_spin)
         strip.addStretch()
         grid.addLayout(strip, 1, 1)
+        self.sig_size = self._sig_slider(grid, 2, "Signature size", 30, 250, remembered.get("sig_size", 100), "{} %")
+        self.sig_dy = self._sig_slider(grid, 3, "Up / down", -100, 100, remembered.get("sig_dy", 0), "{:+d} %")
+        self.sig_dx = self._sig_slider(grid, 4, "Left / right", -100, 100, remembered.get("sig_dx", 0), "{:+d} %")
+        self.name_size = self._sig_slider(grid, 5, "Name size", 50, 200, remembered.get("name_size", 100), "{} %")
         v.addLayout(grid)
         sig_hint = QLabel("Then tick “Signature / name inside the photo” on each size that needs it, in the "
                           "Photos tab. The photo keeps its exact size; the face is framed higher.")
@@ -691,6 +704,8 @@ class IdPhotoDialog(QDialog):
         self.lines_check.toggled.connect(self._refresh)
         self.easy_check.toggled.connect(self._refresh)
         self.sig_pct_spin.valueChanged.connect(self._refresh)
+        for s in (self.sig_size, self.sig_dy, self.sig_dx, self.name_size):
+            s.valueChanged.connect(self._refresh)
         self.sig_name.textChanged.connect(self._refresh)
         self._manual_key = self._geom_key()
         self._busy = False
@@ -710,6 +725,22 @@ class IdPhotoDialog(QDialog):
         sb.setMaximumWidth(110)
         return sb
 
+    def _sig_slider(self, grid, row, label, lo, hi, value, fmt):
+        grid.addWidget(QLabel(label), row, 0)
+        line = QHBoxLayout()
+        s = NoWheelSlider()
+        s.setRange(lo, hi)
+        s.setValue(int(value))
+        val = QLabel(fmt.format(int(value)))
+        val.setObjectName("muted")
+        val.setFixedWidth(46)
+        val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        s.valueChanged.connect(lambda x: val.setText(fmt.format(x)))
+        line.addWidget(s, 1)
+        line.addWidget(val)
+        grid.addLayout(line, row, 1)
+        return s
+
     def _paper(self):
         return next(p for p in self.paper_sizes if p["name"] == self.paper_combo.currentText())
 
@@ -724,6 +755,8 @@ class IdPhotoDialog(QDialog):
             "lines": self.lines_check.isChecked(),
             "easy": self.easy_check.isChecked(),
             "sig_pct": self.sig_pct_spin.value(),
+            "sig_size": self.sig_size.value(), "sig_dy": self.sig_dy.value(),
+            "sig_dx": self.sig_dx.value(), "name_size": self.name_size.value(),
             "sig_name": self.sig_name.text().strip(),
             "signature_path": self.sig_path if uses_sig else None,
             "focus": self.focus,
@@ -733,7 +766,7 @@ class IdPhotoDialog(QDialog):
 
     def _set_source(self, path, edited=False):
         try:
-            img = load_image_rgb(path)
+            img = load_image_rgb(path, keep_alpha=True)
         except Exception as e:
             QMessageBox.warning(self, "Can't use this file", str(e))
             return False
@@ -944,7 +977,7 @@ class IdPhotoDialog(QDialog):
 
     def _edit_photo(self):
         try:
-            base = load_image_rgb(self.orig_path)
+            base = load_image_rgb(self.orig_path, keep_alpha=True)
         except Exception as e:
             QMessageBox.warning(self, "Can't use this file", str(e))
             return
@@ -1000,6 +1033,9 @@ class IdPhotoDialog(QDialog):
         self.lines_check.setChecked(dflt["lines"])
         self.easy_check.setChecked(dflt["easy"])
         self.sig_pct_spin.setValue(dflt["sig_pct"])
+        for s, key in ((self.sig_size, "sig_size"), (self.sig_dy, "sig_dy"),
+                       (self.sig_dx, "sig_dx"), (self.name_size, "name_size")):
+            s.setValue(dflt[key])
         self.sig_name.clear()
         self.manual = None
         self._set_signature(None, None)

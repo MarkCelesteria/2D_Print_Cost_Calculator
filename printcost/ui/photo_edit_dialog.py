@@ -273,13 +273,14 @@ class PhotoEditDialog(QDialog):
         self.box = tuple(int(v) for v in box) if box is not None else None
         if self.box is not None:
             pil_img = pil_img.crop(self.box)
-        self.full = pil_img
         work = pil_img.copy()
         work.thumbnail((photofx.WORK_PX, photofx.WORK_PX), Image.LANCZOS)
-        self.work_img = work
-        self.work = np.asarray(work, dtype=np.uint8).copy()
-        self.alpha = None
-        self.bg = photofx.BACKGROUNDS[0][1]
+        has_alpha = pil_img.mode == "RGBA"
+        self.full = pil_img.convert("RGB")
+        self.work_img = work.convert("RGB")
+        self.work = np.asarray(self.work_img, dtype=np.uint8).copy()
+        self.alpha = np.asarray(work.getchannel("A")).copy() if has_alpha else None
+        self.bg = photofx.TRANSPARENT if has_alpha else photofx.BACKGROUNDS[0][1]
         self.feather, self.shrink, self.sharp = 10, 1, photofx.DEFAULT_SHARP
         self.light = photofx.default_light()
         self.result_image = None
@@ -429,6 +430,11 @@ class PhotoEditDialog(QDialog):
         self.custom_btn.clicked.connect(self._pick_bg_color)
         sw.addWidget(self.custom_btn)
         v.addLayout(sw)
+        self.transparent_btn = QPushButton("Transparent")
+        self.transparent_btn.setFixedHeight(32)
+        self.transparent_btn.setToolTip("Keep the background empty (prints as the paper color)")
+        self.transparent_btn.clicked.connect(lambda: self._set_bg(photofx.TRANSPARENT))
+        v.addWidget(self.transparent_btn)
         self.feather_slider = self._slider(v, "Feather", 0, 60, self.feather, self._set_feather,
                                            lambda x: f"{x / 10:.1f}")
         self.shrink_slider = self._slider(v, "Shrink edge", 0, 5, self.shrink, self._set_shrink)
@@ -540,7 +546,7 @@ class PhotoEditDialog(QDialog):
     def _sync_controls(self):
         has = self.alpha is not None
         for w in (self.clear_btn, self.feather_slider, self.shrink_slider, self.sharp_slider, self.custom_btn,
-                  *[b for b, _ in self.swatches]):
+                  self.transparent_btn, *[b for b, _ in self.swatches]):
             w.setEnabled(has)
         model = self.brush_combo.model()          # brushes that need a cutout are greyed out until there is one
         for i in range(self.brush_combo.count()):
@@ -553,8 +559,10 @@ class PhotoEditDialog(QDialog):
         presets = {c.lower() for _, c in photofx.BACKGROUNDS}
         for b, color in self.swatches:
             self._style_swatch(b, color, color.lower() == self.bg.lower())
-        custom = self.bg.lower() not in presets
+        clear = self.bg == photofx.TRANSPARENT
+        custom = self.bg.lower() not in presets and not clear
         self._style_swatch(self.custom_btn, self.bg if custom else "#ffffff", custom)
+        self._style_swatch(self.transparent_btn, "#eef1f5", clear)
 
     @staticmethod
     def _style_swatch(button, color, selected):
@@ -581,7 +589,10 @@ class PhotoEditDialog(QDialog):
         else:
             a = photofx.finish_alpha(self.alpha, self.feather / 10, self.shrink, self.sharp, 1.0,
                                      self._get_protect(), self.edge_map)
-            view = photofx.compose(self._lit, a, photofx.hex_to_rgb(self.bg), clean=not fast)
+            if self.bg == photofx.TRANSPARENT:
+                view = photofx.over_checker(photofx.compose_transparent(self._lit, a, clean=not fast))
+            else:
+                view = photofx.compose(self._lit, a, photofx.hex_to_rgb(self.bg), clean=not fast)
         self.canvas.set_array(view)
 
     def _get_even_map(self):
@@ -625,7 +636,8 @@ class PhotoEditDialog(QDialog):
         self._render()
 
     def _pick_bg_color(self):
-        color = QColorDialog.getColor(QColor(self.bg), self, "Background color")
+        start = "#ffffff" if self.bg == photofx.TRANSPARENT else self.bg
+        color = QColorDialog.getColor(QColor(start), self, "Background color")
         if color.isValid():
             self._set_bg(color.name())
 
@@ -792,7 +804,11 @@ class PhotoEditDialog(QDialog):
             prot = self._get_protect()
             a = photofx.finish_alpha(self.alpha[Y0:Y1, X0:X1], self.feather / 10, self.shrink, self.sharp, 1.0,
                                      None if prot is None else prot[Y0:Y1, X0:X1], self.edge_map[Y0:Y1, X0:X1])
-            piece = photofx.compose(self._lit[Y0:Y1, X0:X1], a, photofx.hex_to_rgb(self.bg), clean=False)
+            if self.bg == photofx.TRANSPARENT:
+                piece = photofx.over_checker(photofx.compose_transparent(self._lit[Y0:Y1, X0:X1], a, clean=False),
+                                             origin=(X0, Y0))
+            else:
+                piece = photofx.compose(self._lit[Y0:Y1, X0:X1], a, photofx.hex_to_rgb(self.bg), clean=False)
             self.canvas.array[y0:y1, x0:x1] = piece[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0]
         self.canvas.update()
 
@@ -919,7 +935,10 @@ class PhotoEditDialog(QDialog):
         out = photofx.light_full(np.asarray(full, dtype=np.uint8), self.light, self._get_even_map(), self.light_map)
         if self.alpha is not None:
             a = photofx.export_alpha(out, self.alpha, self.feather / 10, self.shrink, self.sharp, self.edge_map)
-            out = photofx.compose(out, a, photofx.hex_to_rgb(self.bg), clean=True)
+            if self.bg == photofx.TRANSPARENT:
+                out = photofx.compose_transparent(out, a, clean=True)
+            else:
+                out = photofx.compose(out, a, photofx.hex_to_rgb(self.bg), clean=True)
             del a
         return Image.fromarray(out)
 
