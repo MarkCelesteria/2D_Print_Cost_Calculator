@@ -40,7 +40,7 @@ SETS = [
 DEFAULTS = {
     "entries": [{"name": "2×2 in", "w": 2.0, "h": 2.0, "qty": 6}],
     "orientation": "auto",      # auto | portrait | landscape
-    "gap_in": 0.1, "margin_in": 0.25, "lines": False,
+    "gap_in": 0, "margin_in": 0.25, "lines": False,
     "focus": (0.5, 0.5, 1.0),   # centre x, centre y (fractions of the picture), height (fraction)
     "easy": False,              # Easy cutting: every cut runs straight across the sheet
     "sig_pct": 20.0,            # signature strip height, % of the photo height

@@ -1,6 +1,7 @@
 import math
 import os
 import re
+import time
 from types import SimpleNamespace
 
 from PIL import Image
@@ -33,6 +34,20 @@ UNITS = [("in", 1.0), ("cm", 1 / 2.54), ("mm", 1 / 25.4)]
 ORIENTATIONS = [("Auto (fewest sheets)", "auto"), ("Portrait", "portrait"), ("Landscape", "landscape")]
 PICK_FILTER = "Pictures (" + " ".join(f"*{e}" for e in IMAGE_EXTS) + ")"
 THUMB_PX = 1600
+
+
+def keep_path(kind, name, days=30):
+    folder = os.path.join(pricing._app_data_dir(), kind)
+    os.makedirs(folder, exist_ok=True)
+    cutoff = time.time() - days * 86400
+    for f in os.listdir(folder):
+        p = os.path.join(folder, f)
+        try:
+            if os.path.getmtime(p) < cutoff:
+                os.remove(p)
+        except OSError:
+            pass
+    return os.path.join(folder, name)
 
 
 # ---------------- inputs that ignore the mouse wheel unless clicked into ----------------
@@ -907,7 +922,7 @@ class IdPhotoDialog(QDialog):
         try:
             with Image.open(path) as im:
                 sig = idphoto.prepare_signature(im)
-            saved = idphoto.save_signature(sig, os.path.join(make_temp_dir(), "signature.png"))
+            saved = idphoto.save_signature(sig, keep_path("signatures", f"signature-{int(time.time())}.png"))
         except Exception as e:
             QMessageBox.warning(self, "Can't use this signature", str(e))
             return
@@ -1010,8 +1025,8 @@ class IdPhotoDialog(QDialog):
                     return
                 self.focus = tuple(orig_focus)
             else:
-                name = os.path.splitext(os.path.basename(self.orig_path))[0] + " (edited).png"
-                path = os.path.join(make_temp_dir(), name)
+                stem = os.path.splitext(os.path.basename(self.orig_path))[0]
+                path = keep_path("edited", f"{stem} (edited {int(time.time())}).png")
                 dlg.result_image.save(path, "PNG", compress_level=1)
                 if not self._set_source(path, edited=True):
                     return

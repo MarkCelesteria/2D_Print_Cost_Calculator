@@ -8,8 +8,8 @@ from PIL import Image
 from PyQt6.QtCore import Qt, QEvent, QTimer, QRectF, QPointF, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
-    QApplication, QColorDialog, QComboBox, QDialog, QFrame, QHBoxLayout, QLabel, QMessageBox, QProgressDialog,
-    QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel,
+    QMessageBox, QProgressDialog, QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
 from printcost.core import matting, photofx
@@ -295,6 +295,7 @@ class PhotoEditDialog(QDialog):
         self.light_strength, self.edge_strength = 35, 60
         self.mode_buttons = {}
         self._protect = None        # unsure areas inside the person, recomputed when the cutout changes
+        self._parts = None          # (portrait matte, big-model matte) of the last high quality run
         self._even_map = None       # light-evening map, computed on demand and when the cutout changes
         self._showing_original = False
         self._dirty = None          # image box changed by the brush since the last repaint
@@ -412,6 +413,15 @@ class PhotoEditDialog(QDialog):
         row.addWidget(self.remove_btn, 1)
         row.addWidget(self.clear_btn)
         v.addLayout(row)
+        self.hq_check = QCheckBox("High quality (slower)")
+        self.hq_check.setToolTip("Better for graduation caps, tassels, veils and other accessories")
+        v.addWidget(self.hq_check)
+        self.detail_slider = self._slider(v, "Accessory detail", 0, 100, 50, self._set_detail)
+        self.detail_slider.setToolTip("Higher fills in cords, tassels and cap edges. Lower keeps hair softer.")
+        self._detail_timer = QTimer(self)
+        self._detail_timer.setSingleShot(True)
+        self._detail_timer.setInterval(250)
+        self._detail_timer.timeout.connect(self._remerge)
         hint = QLabel("Runs on this PC. The photo never leaves it.")
         hint.setObjectName("muted")
         hint.setWordWrap(True)
@@ -667,7 +677,10 @@ class PhotoEditDialog(QDialog):
             QMessageBox.warning(self, "Background remover", err)
             return
         if matting.is_installed():
-            self._run_matte()
+            if self.hq_check.isChecked() and not matting.hq_installed():
+                self._get_hq_pack()
+            else:
+                self._run_matte(self.hq_check.isChecked())
             return
         ask = QMessageBox.question(
             self, "One-time download",
@@ -696,20 +709,70 @@ class PhotoEditDialog(QDialog):
 
     def _download_done(self):
         self._close_progress()
-        self._run_matte()
+        self._remove_bg()
 
     def _download_failed(self, msg):
         self._close_progress()
         if msg != "Cancelled":
             QMessageBox.warning(self, "Download failed", f"{msg}\n\nCheck your internet connection and try again.")
 
-    def _run_matte(self):
-        self._progress = QProgressDialog("Removing the background...", None, 0, 0, self)
+    def _get_hq_pack(self):
+        box = QMessageBox(self)
+        box.setWindowTitle("High quality pack")
+        box.setText(f"High quality cutouts need an extra model (about {matting.HQ_SIZE_MB} MB). "
+                    "It is saved on this PC and works offline afterwards.")
+        download = box.addButton("Download", QMessageBox.ButtonRole.AcceptRole)
+        have_file = box.addButton("I have the file…", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is download:
+            self._download_hq()
+        elif box.clickedButton() is have_file:
+            self._import_hq()
+
+    def _download_hq(self):
+        self._progress = QProgressDialog("Downloading the high quality pack...", "Cancel", 0, 100, self)
+        self._progress.setWindowTitle("Downloading")
+        self._progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self._progress.setMinimumDuration(0)
+        self._progress.setAutoClose(False)
+        self._progress.setAutoReset(False)
+        self._progress.setValue(0)
+        worker = matting.ModelDownloadWorker(self, kind="hq")
+        worker.progress.connect(self._download_progress)
+        worker.done.connect(self._hq_download_done)
+        worker.failed.connect(self._download_failed)
+        self._progress.canceled.connect(worker.cancel)
+        self._worker = worker
+        worker.start()
+
+    def _hq_download_done(self):
+        self._close_progress()
+        self._run_matte(True)
+
+    def _import_hq(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose the high quality model file", "", "ONNX model (*.onnx)")
+        if not path:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            matting.install_hq(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Can't use this file", str(e))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._run_matte(True)
+
+    def _run_matte(self, hq=False):
+        self._progress = QProgressDialog(
+            "Removing the background (high quality, this can take up to a minute)..." if hq
+            else "Removing the background...", None, 0, 0, self)
         self._progress.setWindowTitle("Please wait")
         self._progress.setWindowModality(Qt.WindowModality.WindowModal)
         self._progress.setMinimumDuration(0)
         self._progress.show()
-        worker = matting.MatteWorker(self.work_img, self)
+        worker = matting.MatteWorker(self.work_img, self, hq=hq)
         worker.done.connect(self._matte_done)
         worker.failed.connect(self._matte_failed)
         self._worker = worker
@@ -718,11 +781,34 @@ class PhotoEditDialog(QDialog):
     @guarded
     def _matte_done(self, alpha):
         self._close_progress()
-        self.alpha = photofx.refine_matte(self.work, alpha)    # snap the soft model output to the real edges
-        self.edge_map[:] = 0
-        self._alpha_changed()
+        self._parts = getattr(self._worker, "parts", None)
+        if self._parts:
+            self._apply_merge()
+        else:
+            self.alpha = photofx.refine_matte(self.work, alpha)    # snap the soft model output to the real edges
+            self.edge_map[:] = 0
+            self._alpha_changed()
         self._undo.clear()
         self._sync_controls()
+        self._render()
+
+    def _apply_merge(self):
+        merged, added = matting.merge_parts(*self._parts, self.detail_slider.value())
+        self.alpha = np.maximum(photofx.refine_matte(self.work, merged), added)
+        self.edge_map[:] = 0
+        self._alpha_changed()
+
+    def _set_detail(self, v):
+        self._detail_timer.start()
+
+    def _remerge(self):
+        if self._parts is None or self.alpha is None:
+            return
+        if self._undo:
+            QMessageBox.information(self, "Accessory detail",
+                                    "Set this before using the brush. Click Remove background again to redo the cutout.")
+            return
+        self._apply_merge()
         self._render()
 
     def _matte_failed(self, msg):

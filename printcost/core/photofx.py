@@ -374,14 +374,16 @@ def export_alpha(rgb_full, alpha_u8, feather, shrink, sharp, edge_map=None):
 def _decontaminate(rgb, alpha):
     h, w = alpha.shape
     sigma = max(2.0, 3.0 * max(h, w) / WORK_PX)
-    core = (alpha > 0.97).astype(np.uint8) * 255
-    weight = np.asarray(Image.fromarray(core).filter(ImageFilter.GaussianBlur(sigma)), dtype=np.float32) / 255.0
-    prem = (rgb * (core[..., None] > 0)).astype(np.uint8)
+    clear = (alpha < 0.03).astype(np.uint8) * 255
+    weight = np.asarray(Image.fromarray(clear).filter(ImageFilter.GaussianBlur(sigma)), dtype=np.float32) / 255.0
+    prem = (rgb * (clear[..., None] > 0)).astype(np.uint8)
     blurred = np.asarray(Image.fromarray(prem).filter(ImageFilter.GaussianBlur(sigma)), dtype=np.float32)
-    est = np.minimum(blurred / np.maximum(weight, 1e-3)[..., None], 255.0)
-    use = np.clip((0.97 - alpha) / 0.07, 0.0, 1.0) * (weight > 0.03)
+    back = blurred / np.maximum(weight, 1e-3)[..., None]
     fg = rgb.astype(np.float32)
-    return fg + (est - fg) * use[..., None]
+    a = alpha[..., None]
+    unmixed = np.clip((fg - (1 - a) * back) / np.maximum(a, 0.25), 0.0, 255.0)
+    use = (weight > 0.02) & (alpha < 0.97)
+    return np.where(use[..., None], unmixed, fg)
 
 
 def compose_transparent(rgb, alpha, clean=True):

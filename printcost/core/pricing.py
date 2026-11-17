@@ -91,7 +91,7 @@ DEFAULT_SETTINGS = {
     "duplex": {"extra_per_sheet": 0.0, "discount_pct": 0.0, "margin_in": 0.25, "printers": {}},
     "idphoto": {
         "entries": [{"name": "2×2 in", "w": 2.0, "h": 2.0, "qty": 6}],
-        "orientation": "auto", "gap_in": 0.1, "margin_in": 0.25, "lines": False,
+        "orientation": "auto", "gap_in": 0, "margin_in": 0.25, "lines": False,
         "pricing_mode": "calculated", "fee": 0.0, "sets": {},
     },
 }

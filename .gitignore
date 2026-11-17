@@ -12,3 +12,5 @@ _backup_before_restructure.zip
 venv/
 
 *.zip
+
+models/birefnet_lite.onnx
