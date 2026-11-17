@@ -31,6 +31,27 @@ def _fit(text, size, width, font="helv"):
     return text + "..."
 
 
+def _wrap(text, size, width, font="helv"):
+    lines, cur = [], ""
+    for word in text.split(" "):
+        trial = f"{cur} {word}" if cur else word
+        if fitz.get_text_length(trial, fontname=font, fontsize=size) <= width:
+            cur = trial
+            continue
+        if cur:
+            lines.append(cur)
+        while fitz.get_text_length(word, fontname=font, fontsize=size) > width and len(word) > 1:
+            cut = len(word)
+            while cut > 1 and fitz.get_text_length(word[:cut], fontname=font, fontsize=size) > width:
+                cut -= 1
+            lines.append(word[:cut])
+            word = word[cut:]
+        cur = word
+    if cur:
+        lines.append(cur)
+    return lines or [""]
+
+
 def _draw(page, d):
     """Draws the receipt top to bottom and returns the height it needs."""
     r = d["result"]
@@ -50,6 +71,18 @@ def _draw(page, d):
                          fontname=font, fontsize=size, color=label_color)
         page.insert_text((W - M - vw, y), value, fontname=font, fontsize=size, color=color)
         y += size * 1.7
+
+    def wrap_row(label, value, size=9, font="helv", color=INK, label_color=MUTED):
+        nonlocal y
+        value = value.replace("×", "x")
+        lw = fitz.get_text_length(label, fontname=font, fontsize=size)
+        lines = _wrap(value, size, (W - 2 * M - lw - 8) * 0.92, font)
+        page.insert_text((M, y), label, fontname=font, fontsize=size, color=label_color)
+        for line in lines:
+            vw = fitz.get_text_length(line, fontname=font, fontsize=size)
+            page.insert_text((W - M - vw, y), line, fontname=font, fontsize=size, color=color)
+            y += size * 1.4
+        y += size * 0.3
 
     def rule(dashed=True):
         nonlocal y
@@ -86,7 +119,7 @@ def _draw(page, d):
         row("Poster size", d["poster"]["size"])
     if d.get("idphoto"):
         row("ID photos", f"{d['idphoto']['photos']} pcs")
-        row("Sizes", d["idphoto"]["summary"])
+        wrap_row("Sizes", d["idphoto"]["summary"])
     row("Paper", d["paper"])
     row("Paper type", d.get("paper_type", "Plain paper"))
     row("Mode / Quality", f"{MODES.get(d['mode'], 'Color')} / {d['quality'].title()}")

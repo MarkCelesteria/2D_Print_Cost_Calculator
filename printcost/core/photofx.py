@@ -428,3 +428,18 @@ def paint(alpha, x, y, radius, value, softness=0.35):
     region = np.maximum(region, m * 255.0) if value > 127 else np.minimum(region, (1 - m) * 255.0)
     alpha[y0:y1, x0:x1] = region.astype(np.uint8)
     return x0, y0, x1, y1
+
+
+def paint_from(alpha, source, x, y, radius, softness=0.35):
+    """Brush dab that copies the (uint8) `source` matte into `alpha` where it is higher. Returns the box it changed."""
+    h, w = alpha.shape
+    x0, x1 = max(0, int(x - radius)), min(w, int(x + radius) + 2)
+    y0, y1 = max(0, int(y - radius)), min(h, int(y + radius) + 2)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    yy, xx = np.ogrid[y0:y1, x0:x1]
+    d = np.sqrt((xx - x) ** 2 + (yy - y) ** 2)
+    m = np.clip((radius - d) / max(radius * softness, 1e-3), 0.0, 1.0)
+    region = alpha[y0:y1, x0:x1].astype(np.float32)
+    alpha[y0:y1, x0:x1] = np.maximum(region, source[y0:y1, x0:x1].astype(np.float32) * m).astype(np.uint8)
+    return x0, y0, x1, y1

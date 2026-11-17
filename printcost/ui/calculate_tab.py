@@ -12,7 +12,7 @@ from PyQt6.QtPrintSupport import QPrinterInfo
 from printcost.core import pricing
 from printcost.ui.icons import make_icon
 from printcost.ui.preview_widget import PreviewWidget
-from printcost.core.worker import AnalyzeWorker, LoadDocumentWorker
+from printcost.core.worker import AnalyzeWorker, LoadDocumentWorker, LayoutWorker
 from printcost.core.analyzer import (render_pdf_page, apply_preview_mode, compute_cost, cleanup_temp_dirs,
                       parse_page_ranges, format_page_ranges, get_document_page_size, closest_paper,
                       get_pdf_page_inches, fit_page_to_paper, SUPPORTED_EXTS, IMAGE_EXTS, is_image,
@@ -55,6 +55,10 @@ def card(layout_cls=QVBoxLayout):
 
 
 class CalculateTab(QWidget):
+    _layout_token = 0
+    _layout_busy = False
+    _calc_after_layout = False
+
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self.settings = settings
@@ -312,10 +316,19 @@ class CalculateTab(QWidget):
         sub.addWidget(self.back_combo, 1, 1)
         test_row = with_help(self.test_btn, "Prints 2 test sheets so you can check the backs once. The app then fixes the settings above and remembers them for this printer.")
         sub.addLayout(test_row, 1, 2, 1, 2)
-        self.connect_box = QCheckBox("No middle margin (the two pages touch at the fold)")
-        self.connect_box.setToolTip("Booklet only. Removes the space at the fold so a picture can run across both pages.")
-        self.connect_box.setVisible(False)
-        connect_row = with_help(self.connect_box, "Removes the blank space at the fold so a picture can run across both pages. Your pages need to be designed to reach the edge.")
+        self.fold_label = QLabel("Middle margin")
+        self.fold_input = QDoubleSpinBox()
+        self.fold_input.setRange(0.0, 2.0)
+        self.fold_input.setDecimals(2)
+        self.fold_input.setSingleStep(0.05)
+        self.fold_input.setSuffix(" in")
+        self.fold_input.setFixedWidth(90)
+        self.fold_input.setKeyboardTracking(False)  # rebuild once you press Enter or leave the box
+        self.fold_input.setToolTip("Booklet only. 0 = the two pages touch at the fold. Any number sets the space between the fold and each page.")
+        self.fold_label.setVisible(False)
+        self.fold_input.setVisible(False)
+        connect_row = with_help(self.fold_input, "0 makes the two pages touch at the fold, so a picture can run across both. Type a number (in inches) to leave that much space between the fold and each page. Your pages need to be designed to reach the edge.")
+        connect_row.insertWidget(0, self.fold_label)
         self.connect_help = connect_row.help
         self.connect_help.setVisible(False)
         sub.addLayout(connect_row, 2, 0, 1, 4)
@@ -329,7 +342,7 @@ class CalculateTab(QWidget):
         self._duplex_printer = None
         self.layout_combo.currentIndexChanged.connect(self._on_layout_changed)
         self.blank_covers_box.toggled.connect(self._apply_layout)
-        self.connect_box.toggled.connect(self._apply_layout)
+        self.fold_input.valueChanged.connect(self._apply_layout)
         for box in (self.flip_combo, self.output_combo, self.back_combo):
             box.currentIndexChanged.connect(self._duplex_edited)
 
@@ -835,7 +848,8 @@ class CalculateTab(QWidget):
         self.layout_combo.blockSignals(False)
         for w in self._duplex_widgets:
             w.setVisible(mode != "normal")
-        self.connect_box.setVisible(mode == "booklet")
+        self.fold_label.setVisible(mode == "booklet")
+        self.fold_input.setVisible(mode == "booklet")
         self.connect_help.setVisible(mode == "booklet")
 
     def _on_layout_changed(self):
@@ -890,20 +904,47 @@ class CalculateTab(QWidget):
             return
         mode = self.layout_mode
         if mode == "normal":
-            path, count = base, get_pdf_page_count(base)
-        else:
-            paper = self._current_paper()
-            if paper is None:
-                return
-            try:
-                path, count = page_layout.build_layout_pdf(
-                    base, mode, paper, self.blank_covers_box.isChecked(), self.settings["duplex"]["margin_in"],
-                    self.connect_box.isChecked())
-            except Exception as e:
-                QMessageBox.warning(self, "Couldn't arrange the pages", str(e))
-                self._set_layout_mode("normal")
-                self._apply_layout()
-                return
+            self._layout_token += 1  # a build still running is now out of date
+            self._layout_busy = False
+            self.preview.stop_scan()
+            self._finish_layout(mode, base, get_pdf_page_count(base))
+            return
+        paper = self._current_paper()
+        if paper is None:
+            return
+        self._layout_token += 1
+        token = self._layout_token
+        self._layout_busy = True
+        worker = LayoutWorker(base, mode, paper, self.blank_covers_box.isChecked(),
+                              self.settings["duplex"]["margin_in"], self.fold_input.value(), self)
+        worker.done.connect(lambda path, count: self._on_layout_built(token, mode, path, count))
+        worker.failed.connect(lambda msg: self._on_layout_failed(token, msg))
+        worker.finished.connect(worker.deleteLater)
+        self.preview.start_scan()
+        self.status_label.setText("Arranging pages...")
+        worker.start()
+
+    def _on_layout_built(self, token, mode, path, count):
+        if token != self._layout_token:  # the layout changed again while this one was building
+            return
+        self._layout_busy = False
+        self.preview.stop_scan()
+        self._finish_layout(mode, path, count)
+        if self._calc_after_layout:
+            self._calc_after_layout = False
+            self._calculate()
+
+    def _on_layout_failed(self, token, msg):
+        if token != self._layout_token:
+            return
+        self._layout_busy = False
+        self._calc_after_layout = False
+        self.preview.stop_scan()
+        QMessageBox.warning(self, "Couldn't arrange the pages", msg)
+        self._set_layout_mode("normal")
+        self._apply_layout()
+
+    def _finish_layout(self, mode, path, count):
         self.resolved_pdf_path = path
         self.page_count = count
         self.current_page = 0
@@ -1123,6 +1164,9 @@ class CalculateTab(QWidget):
                 "sheet_pages": page_layout.sheet_pages(count, mode, self.blank_covers_box.isChecked())}
 
     def _calculate(self):
+        if self._layout_busy:
+            self._calc_after_layout = True
+            return
         if not self.file_path:
             QMessageBox.warning(self, "No file", "Please select a file first.")
             return

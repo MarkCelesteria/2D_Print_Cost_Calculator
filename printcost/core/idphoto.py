@@ -321,8 +321,12 @@ def describe(spec, sheets=None):
     """Texts for the UI and the receipt."""
     if sheets is None:
         _, sheets = best_plan(spec)
-    parts = [f"{e['qty']} × {size_name(e['w'], e['h'])}" + (" + signature" if e.get("sig") else "")
-             for e in spec["entries"] if e["qty"] > 0]
+    totals = {}
+    for e in spec["entries"]:
+        if e["qty"] > 0:
+            key = size_name(e["w"], e["h"]) + (" + signature" if e.get("sig") else "")
+            totals[key] = totals.get(key, 0) + e["qty"]
+    parts = [f"{qty} × {name}" for name, qty in totals.items()]
     counts = [len(s) for s in sheets]
     return {
         "photos": total_photos(spec),

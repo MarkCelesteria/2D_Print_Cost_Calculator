@@ -4,6 +4,7 @@ from printcost.core.analyzer import (
     resolve_to_pdf, get_pdf_page_count, render_pdf_page, build_batch_pdf, is_image,
     analyze_pdf, analyze_docx_fallback, compute_cost, AnalysisError,
 )
+from printcost.core.layout import build_layout_pdf
 
 
 class LoadDocumentWorker(QThread):
@@ -109,3 +110,19 @@ class AnalyzeWorker(QThread):
             self.failed.emit(str(e))
         except Exception as e:
             self.failed.emit(f"Unexpected error: {e}")
+
+
+class LayoutWorker(QThread):
+    done = pyqtSignal(str, int)
+    failed = pyqtSignal(str)
+
+    def __init__(self, base, mode, paper, blank_covers, margin_in, fold_in, parent=None):
+        super().__init__(parent)
+        self.args = (base, mode, paper, blank_covers, margin_in, fold_in)
+
+    def run(self):
+        try:
+            path, count = build_layout_pdf(*self.args)
+            self.done.emit(path, count)
+        except Exception as e:
+            self.failed.emit(str(e))

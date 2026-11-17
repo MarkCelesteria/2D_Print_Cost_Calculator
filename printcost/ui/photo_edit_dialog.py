@@ -21,7 +21,8 @@ UNDO_LIMIT = 15
 LIGHT_BRUSHES = ("lighten", "darken", "light_clear")
 EDGE_BRUSHES = ("sharpen", "smooth", "edge_clear")
 BRUSH_TYPES = [("None (move the picture)", "view"), ("Restore (bring back cutout)", "restore"),
-               ("Erase (remove background)", "erase"), ("Lighten", "lighten"), ("Darken", "darken"),
+               ("Erase (remove background)", "erase"), ("Accessory (cap, cord, tassel)", "accessory"),
+               ("Lighten", "lighten"), ("Darken", "darken"),
                ("Sharpen edge", "sharpen"), ("Smooth edge", "smooth"),
                ("Clear light strokes", "light_clear"), ("Clear edge strokes", "edge_clear")]
 BRUSH_HINTS = {
@@ -29,6 +30,8 @@ BRUSH_HINTS = {
             "Restore, Erase and the edge brushes need the background removed first.",
     "restore": "Brings back parts the cutout removed (hair, shoulders, glasses).",
     "erase": "Removes leftover background.",
+    "accessory": "Paint over a cap board, cord or tassel that is missing or broken. It uses the high quality "
+                 "shape, so run Remove background with High quality ticked first.",
     "lighten": "Brightens only where you paint (dark side of the hair, shadows). Raise Strength and paint "
                "again for more.",
     "darken": "Darkens only where you paint (shiny or too bright spots).",
@@ -38,8 +41,8 @@ BRUSH_HINTS = {
     "light_clear": "Paint over earlier Lighten / Darken strokes to remove them.",
     "edge_clear": "Paint over earlier Sharpen / Smooth strokes to remove them.",
 }
-CUTOUT_MODES = ("restore", "erase") + EDGE_BRUSHES      # tools that need a cutout
-BRUSH_COLORS = {"restore": PRIMARY, "erase": MAGENTA, "lighten": "#f59e0b", "darken": "#475569",
+CUTOUT_MODES = ("restore", "erase", "accessory") + EDGE_BRUSHES      # tools that need a cutout
+BRUSH_COLORS = {"restore": PRIMARY, "erase": MAGENTA, "accessory": "#dc2626", "lighten": "#f59e0b", "darken": "#475569",
                 "light_clear": "#94a3b8", "sharpen": "#16a34a", "smooth": "#7c3aed", "edge_clear": "#94a3b8"}
 
 
@@ -75,6 +78,11 @@ def guarded(fn):
             self._dirty = None
             self._report_error(e, fn.__name__)
     return wrapper
+
+
+class NoWheelCombo(QComboBox):
+    def wheelEvent(self, event):
+        event.ignore()
 
 
 class NoWheelSlider(QSlider):
@@ -296,6 +304,7 @@ class PhotoEditDialog(QDialog):
         self.mode_buttons = {}
         self._protect = None        # unsure areas inside the person, recomputed when the cutout changes
         self._parts = None          # (portrait matte, big-model matte) of the last high quality run
+        self._hq_shape = None       # the big model's silhouette, used by the Accessory brush
         self._even_map = None       # light-evening map, computed on demand and when the cutout changes
         self._showing_original = False
         self._dirty = None          # image box changed by the brush since the last repaint
@@ -314,7 +323,9 @@ class PhotoEditDialog(QDialog):
         QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), self).activated.connect(self._undo_stroke)
         self._sync_controls()
         self._render()
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
         self.resize(1040, 740)
+        self.setWindowState(Qt.WindowState.WindowMaximized)
 
     def _restore_state(self, state):
         if not state:
@@ -380,7 +391,7 @@ class PhotoEditDialog(QDialog):
         scroll = FitWidthScroll()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setFixedWidth(340)
+        scroll.setFixedWidth(390)
         holder = QWidget()
         body = QVBoxLayout(holder)
         body.setContentsMargins(4, 4, 10, 4)
@@ -416,8 +427,9 @@ class PhotoEditDialog(QDialog):
         self.hq_check = QCheckBox("High quality (slower)")
         self.hq_check.setToolTip("Better for graduation caps, tassels, veils and other accessories")
         v.addWidget(self.hq_check)
-        self.detail_slider = self._slider(v, "Accessory detail", 0, 100, 50, self._set_detail)
-        self.detail_slider.setToolTip("Higher fills in cords, tassels and cap edges. Lower keeps hair softer.")
+        self.detail_slider = self._slider(v, "Accessory detail", 0, 100, 0, self._set_detail)
+        self.detail_slider.setToolTip("Higher fills in cords and cap edges everywhere, but can make hair edges harder. "
+                                      "To fix one spot only, use the Accessory brush.")
         self._detail_timer = QTimer(self)
         self._detail_timer.setSingleShot(True)
         self._detail_timer.setInterval(250)
@@ -453,7 +465,7 @@ class PhotoEditDialog(QDialog):
         v = section("Brush")
         row = QHBoxLayout()
         row.setSpacing(6)
-        self.brush_combo = QComboBox()
+        self.brush_combo = NoWheelCombo()
         for label, mode in BRUSH_TYPES:
             self.brush_combo.addItem(label, mode)
         self.brush_combo.currentIndexChanged.connect(lambda i: self._set_mode(self.brush_combo.itemData(i)))
@@ -515,7 +527,7 @@ class PhotoEditDialog(QDialog):
     def _slider(self, layout, label, lo, hi, value, on_change, fmt=str):
         row = QHBoxLayout()
         name = QLabel(label)
-        name.setFixedWidth(84)
+        name.setFixedWidth(116)
         s = NoWheelSlider()
         s.setRange(lo, hi)
         s.setValue(value)
@@ -706,6 +718,8 @@ class PhotoEditDialog(QDialog):
     def _download_progress(self, done, total):
         if total and self._progress is not None:
             self._progress.setValue(int(done * 100 / total))
+            base = self._progress.labelText().split(" (")[0]
+            self._progress.setLabelText(f"{base} ({done // 1048576} of {total // 1048576} MB)")
 
     def _download_done(self):
         self._close_progress()
@@ -778,10 +792,19 @@ class PhotoEditDialog(QDialog):
         self._worker = worker
         worker.start()
 
-    @guarded
     def _matte_done(self, alpha):
-        self._close_progress()
+        if self._progress is not None:
+            self._progress.setLabelText("Finishing the cutout...")
+            QApplication.processEvents()
+        try:
+            self._matte_apply(alpha)
+        finally:
+            self._close_progress()
+
+    @guarded
+    def _matte_apply(self, alpha):
         self._parts = getattr(self._worker, "parts", None)
+        self._hq_shape = matting.hq_shape(self._parts[1]) if self._parts else None
         if self._parts:
             self._apply_merge()
         else:
@@ -858,6 +881,8 @@ class PhotoEditDialog(QDialog):
         mode, r = self.canvas.mode, self.canvas.brush_radius_image()
         if mode in ("restore", "erase"):
             box = photofx.paint(self.alpha, x, y, r, 255 if mode == "restore" else 0)
+        elif mode == "accessory":
+            box = photofx.paint_from(self.alpha, self._hq_shape, x, y, r)
         elif mode in LIGHT_BRUSHES:
             value = {"lighten": self.light_strength, "darken": -self.light_strength, "light_clear": 0}[mode]
             box = photofx.paint_map(self.light_map, x, y, r, value, softness=1.0)
@@ -910,7 +935,7 @@ class PhotoEditDialog(QDialog):
         if mode in LIGHT_BRUSHES:
             if self._lit_dirty:
                 self._render()
-        elif self.alpha is None:
+        elif self.alpha is None or (mode == "accessory" and self._hq_shape is None):
             return
         self._undo.append(self._snapshot())
         del self._undo[:-UNDO_LIMIT]
@@ -937,7 +962,7 @@ class PhotoEditDialog(QDialog):
             self._last = None
             self._brush_timer.stop()
             self._dirty = None
-            if self.canvas.mode in ("restore", "erase"):
+            if self.canvas.mode in ("restore", "erase", "accessory"):
                 self._alpha_changed()
             self._render()          # one full-quality pass (with edge color cleanup) when the stroke ends
 

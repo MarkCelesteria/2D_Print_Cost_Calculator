@@ -260,7 +260,7 @@ QHeaderView::section {{
 }}
 
 /* ---------- progress ---------- */
-QProgressBar {{ background: {BORDER}; border: none; border-radius: 4px; max-height: 8px; }}
+QProgressBar {{ background: {BORDER}; border: none; border-radius: 4px; max-height: 8px; qproperty-textVisible: false; }}
 QProgressBar::chunk {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00aeef, stop:0.55 #ec008c, stop:1 #f5c400);
     border-radius: 4px;

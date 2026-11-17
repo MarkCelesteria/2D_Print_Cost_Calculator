@@ -37,7 +37,7 @@ THUMB_PX = 1600
 
 
 def keep_path(kind, name, days=30):
-    folder = os.path.join(pricing._app_data_dir(), kind)
+    folder = os.path.join(pricing.user_data_dir(), kind)
     os.makedirs(folder, exist_ok=True)
     cutoff = time.time() - days * 86400
     for f in os.listdir(folder):

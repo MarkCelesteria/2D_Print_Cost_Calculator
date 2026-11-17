@@ -104,9 +104,9 @@ def _show(page, rect, src, index, align="center"):
         page.show_pdf_page(target, src, index)
 
 
-def build_layout_pdf(source_pdf, mode, paper, blank_covers=False, margin_in=0.25, connect=False):
+def build_layout_pdf(source_pdf, mode, paper, blank_covers=False, margin_in=0.25, fold_in=0.0):
     """Returns (pdf_path, number_of_sides). Sides are printed front, back, front, back...
-    connect=True removes the middle margin of a booklet so the two pages touch at the fold."""
+    fold_in is the space between the fold and each booklet page; 0 makes the pages touch."""
     if fitz is None:
         raise AnalysisError("PyMuPDF (fitz) is not installed. Run: pip install pymupdf")
     src = fitz.open(source_pdf)
@@ -125,11 +125,11 @@ def build_layout_pdf(source_pdf, mode, paper, blank_covers=False, margin_in=0.25
         else:
             short, long_ = sorted((paper["width_in"] * 72, paper["height_in"] * 72))
             w, h, m = long_, short, margin_in * 72
-            fold = 0 if connect else m
+            fold = fold_in * 72
             for left, right in booklet_sides(n, blank_covers):
                 page = out.new_page(width=w, height=h)
-                cells = ((left, fitz.Rect(m, m, w / 2 - fold, h - m), "right" if connect else "center"),
-                         (right, fitz.Rect(w / 2 + fold, m, w - m, h - m), "left" if connect else "center"))
+                cells = ((left, fitz.Rect(m, m, w / 2 - fold, h - m), "right"),
+                         (right, fitz.Rect(w / 2 + fold, m, w - m, h - m), "left"))
                 for index, rect, align in cells:
                     if index is not None:
                         _show(page, rect, src, index, align)

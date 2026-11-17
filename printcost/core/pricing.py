@@ -13,6 +13,12 @@ def _app_data_dir():
     return os.path.dirname(os.path.dirname(here))        # settings.json stays next to main.py
 
 
+def user_data_dir():
+    path = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "PrintCostCalculator")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 SETTINGS_PATH = os.path.join(_app_data_dir(), "settings.json")
 
 DEFAULT_SETTINGS = {

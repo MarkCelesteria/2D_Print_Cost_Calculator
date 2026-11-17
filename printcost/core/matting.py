@@ -46,7 +46,7 @@ def bundled_path():
 
 
 def download_path(kind="fast"):
-    return os.path.join(pricing._app_data_dir(), "models", HQ_FILE if kind == "hq" else MODEL_FILE)
+    return os.path.join(pricing.user_data_dir(), "models", HQ_FILE if kind == "hq" else MODEL_FILE)
 
 
 def hq_installed():
@@ -221,6 +221,14 @@ def merge_parts(soft, hq, detail=50):
     out[edge] = np.maximum(out[edge], soft_edge[edge])
     added = np.where(out > soft_f + 0.05, out, 0.0)
     return (out * 255.0 + 0.5).astype(np.uint8), (added * 255.0 + 0.5).astype(np.uint8)
+
+
+def hq_shape(hq):
+    """The big model's silhouette with rope-twist gaps closed, for the Accessory brush."""
+    m = Image.fromarray((hq > 127).astype(np.uint8) * 255)
+    m = m.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.MinFilter(5))
+    m = m.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
+    return np.asarray(m.filter(ImageFilter.GaussianBlur(1))).copy()
 
 
 def merge_matte(soft, hq, detail=50):
