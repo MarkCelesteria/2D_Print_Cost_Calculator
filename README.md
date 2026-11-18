@@ -17,7 +17,8 @@ Current version: see `APP_VERSION` in `printcost/core/updater.py`.
 - **Full preview and editor** — zoomable preview of every page; in edit mode you can move, resize, crop, copy/paste and delete images (see below).
 - **Poster mode** — slice one picture or PDF page into a grid of sheets.
 - **Double-sided and booklet layouts** — back-to-back and booklet page ordering, blank covers, per-printer flip settings, and an alignment test page.
-- **ID photo sheets** — pack photos of several sizes (1×1, 2×2, passport, stamp, wallet, custom) onto one sheet, with cut lines and optional signature strips.
+- **ID photo sheets** — pack photos of several sizes (1×1, 2×2, passport, stamp, wallet, custom) onto one sheet, with cut lines, optional signature strips, and a zoomable sheet preview.
+- **Photo editor** — remove or replace the background, touch up the cutout edges with brushes, and fix the lighting, all on your PC.
 - **Receipt and printing** — receipt image / PDF with your shop name (and permit/TIN if set), and direct printing.
 - **System tray** — closing the window hides it to the tray; click the tray icon to bring it back.
 - **Single instance** — opening a second copy (or a file) hands over to the running one. If the running copy is older, you are asked whether to replace it.
@@ -74,6 +75,8 @@ print_cost_calculator/
       poster.py            <- poster slicing, preview image, poster pricing
       layout.py            <- double-sided and booklet page ordering
       idphoto.py           <- ID photo sheet packing
+      photofx.py           <- photo editing: lighting, cutout edges, background compositing
+      matting.py           <- background removal models (download, run, merge)
       pdf_editor.py        <- editing pages and images in a PDF
       updater.py           <- checks GitHub and updates the exe
       single_instance.py   <- one running copy, hand-over of files
@@ -84,10 +87,14 @@ print_cost_calculator/
       settings_tab.py      <- paper sizes, ink prices, percentages, discounts
       full_preview_dialog.py <- full preview and the editor
       poster_dialog.py     <- the Poster window
+      layout_preview_dialog.py <- double-sided / booklet preview
+      idphoto_dialog.py    <- the ID photo window and sheet preview
+      idphoto_editor.py    <- arranging ID photos by hand
+      photo_edit_dialog.py <- the photo editor (background, brushes, lighting)
       preview_widget.py    <- first-page thumbnail and spinner
       print_helper.py      <- printing
       receipt.py           <- receipt image / PDF
-      notes.py, icons.py, style.py
+      notes.py, icons.py, style.py, help.py
   tools/                   <- build.py, build.bat
   docs/                    <- BUILD_EXE.md, add_context_menu.reg
 ```
@@ -148,6 +155,33 @@ Pick a photo, add one or more sizes with a quantity for each, and the app packs 
 choosing portrait or landscape to fit the most. Gap, margin and cut lines are adjustable. Pricing is calculated
 from the sheets used, or a flat fee. Photos that would print below about 150 DPI are flagged.
 
+- **Signature strip**: add a signature picture and a printed name under each photo that has it turned on.
+- **Sheet preview**: shown to scale. Scroll to zoom (up to 600%), drag to move, double-click to zoom in or out.
+  Past 150% a sharp print-resolution version of the sheet is drawn in the background, so you can check the
+  signature and name up close while you change sizes, gap or text.
+- **Arrange by hand**: drag photos to your own layout. Changing sizes, paper or spacing clears it.
+- **Sets and export**: save a group of sizes as a set, and export single photos or whole sheets as images.
+
+### Photo editor
+
+Press **Edit photo** in the ID photo window. Everything runs on your PC, and the photo never leaves it.
+
+- **Background**: *Remove background* makes the cutout (*Redo cutout* once there is one, *Clear* goes back to the original).
+  The background can be White, Blue, Red, a custom color, transparent, or an imported picture (scaled to cover, never stretched).
+  *Feather*, *Shrink edge* and *Edge sharpness* shape the cutout edge.
+- **High quality**: a slower, bigger model that finds hats, headwear, veils and other accessories. It shows
+  its progress, and closing the progress window cancels it. *Accessory detail* sets how much of the accessory
+  shapes is added everywhere.
+- **Brushes**: Restore, Erase, Accessory (needs a High quality cutout), Lighten, Darken, Sharpen edge, Smooth edge,
+  and two Clear brushes that remove earlier light or edge strokes. Brush size, Strength and Undo (Ctrl+Z) apply.
+- **Lighting**: Exposure, Shadows, Highlights, Contrast, Warmth, Left / right, Even out, plus Auto, White point and Reset.
+- Controls that can't be used yet are greyed out: the edge sliders and most brushes need a cutout, and Accessory detail
+  and the Accessory brush need a High quality cutout.
+
+The background remover needs the `onnxruntime` package (the app tells you if it is missing). On first use it asks to
+download a small model (about 26 MB). High quality needs an extra model (about 200 MB), which can be downloaded
+in the app or imported from a file. Models are saved in `%APPDATA%\PrintCostCalculator\models` and work offline afterwards.
+
 ## Turning it into a real double-clickable app
 
 See `docs/BUILD_EXE.md`: packages this into a single `.exe` with PyInstaller. The installer is released on GitHub
@@ -183,3 +217,5 @@ and any discounts are applied. The exact rules are in `compute_cost` in `printco
 - No Word/WPS add-in integration: standalone app, pick the file manually.
 - Renders at 150 DPI for speed; large or many-page PDFs may take a few seconds, and the scanning animation covers this wait.
 - The image editor only edits normal (unrotated, non-inline) images, and a selection stays on one page.
+- Background removal runs on the CPU. High quality can take up to a minute, and cancelling it stops the window at once
+  but the CPU stays busy until the model finishes its current step.
