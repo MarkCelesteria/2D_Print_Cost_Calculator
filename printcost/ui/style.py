@@ -79,7 +79,7 @@ QCheckBox::indicator {{
     width: 16px; height: 16px;
     border: 1px solid #b8c4d3; border-radius: 4px; background: white;
 }}
-QCheckBox::indicator:hover {{ border-color: {PRIMARY}; }}
+QCheckBox::indicator:hover {{ border-color: {YELLOW_DARK}; }}
 QCheckBox::indicator:checked {{ background: {PRIMARY}; border-color: {PRIMARY}; }}
 QCheckBox::indicator:disabled {{ background: {BG}; border-color: {BORDER}; }}
 /* options that cost extra (rush fee, double-sided...): setProperty("extra", True) */
@@ -132,7 +132,7 @@ QToolButton#help {{
     font-size: 11px;
     font-weight: 700;
 }}
-QToolButton#help:hover {{ background: {PRIMARY}; color: white; }}
+QToolButton#help:hover {{ background: {YELLOW}; border-color: {YELLOW_DARK}; color: {TEXT}; }}
 QFrame#helpPopup {{
     background: white;
     border: 1px solid {PRIMARY};
@@ -170,7 +170,7 @@ QPushButton {{
     border-radius: 8px;
     padding: 7px 16px;
 }}
-QPushButton:hover {{ background: {SOFT}; border-color: {PRIMARY}; }}
+QPushButton:hover {{ background: {YELLOW_SOFT}; border-color: {YELLOW_DARK}; }}
 
 QPushButton#primary {{
     background: {PRIMARY};
@@ -206,8 +206,8 @@ QPushButton#secondary {{
     padding: 7px 14px;
     font-weight: 600;
 }}
-QPushButton#secondary:hover {{ background: {SOFT}; }}
-QPushButton#secondary:pressed {{ background: #cdeef5; }}
+QPushButton#secondary:hover {{ background: {YELLOW_SOFT}; }}
+QPushButton#secondary:pressed {{ background: #ffe680; }}
 QPushButton#secondary:checked {{ background: {PRIMARY}; color: white; }}
 QPushButton#secondary:disabled {{ color: {DISABLED_TEXT}; border: 1px solid {BORDER}; background: #eef1f5; }}
 
@@ -220,7 +220,7 @@ QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox {{
     selection-background-color: {PRIMARY};
     selection-color: white;
 }}
-QLineEdit:hover, QComboBox:hover, QDoubleSpinBox:hover, QSpinBox:hover {{ border-color: #b8c4d3; }}
+QLineEdit:hover, QComboBox:hover, QDoubleSpinBox:hover, QSpinBox:hover {{ border-color: {YELLOW_DARK}; }}
 QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus, QSpinBox:focus {{ border: 1px solid {PRIMARY}; }}
 QLineEdit:disabled, QComboBox:disabled, QDoubleSpinBox:disabled, QSpinBox:disabled {{
     background: #eef1f5;
@@ -232,7 +232,7 @@ QComboBox::drop-down {{ border: none; width: 24px; }}
 QComboBox QAbstractItemView {{
     background: white;
     border: 1px solid {BORDER};
-    selection-background-color: {SOFT};
+    selection-background-color: {YELLOW_SOFT};
     selection-color: {TEXT};
     outline: 0;
     padding: 2px;
@@ -262,9 +262,10 @@ QHeaderView::section {{
 QSlider::groove:horizontal {{ height: 4px; background: {BORDER}; border-radius: 2px; }}
 QSlider::sub-page:horizontal {{ background: {PRIMARY}; border-radius: 2px; }}
 QSlider::handle:horizontal {{
-    background: white; border: 2px solid {PRIMARY};
+    background: white; border: 2px solid {MAGENTA};
     width: 10px; height: 10px; margin: -5px 0; border-radius: 7px;
 }}
+QSlider::handle:horizontal:hover {{ background: {YELLOW}; border-color: {YELLOW_DARK}; }}
 QSlider::sub-page:horizontal:disabled {{ background: #cbd5e1; }}
 QSlider::handle:horizontal:disabled {{ background: #eef1f5; border-color: #cbd5e1; }}
 

@@ -29,6 +29,7 @@ from printcost.ui.layout_preview_dialog import SheetsPreviewDialog, BookPreviewD
 from printcost.ui.help import HelpButton, with_help
 from printcost.ui.notes import label_style, notice
 from printcost.ui.style import MAGENTA_DARK, ElidedLabel
+from printcost.ui.drop_overlay import DropOverlay
 
 INK_TINTS = ["#e0f4fb", "#fde4f2", "#fff7c9", "#e9edf2"]
 
@@ -84,6 +85,7 @@ class CalculateTab(QWidget):
         self.manual_discount = None
         self.setAcceptDrops(True)
         self._build()
+        self.drop_overlay = DropOverlay(self)
 
     def _build(self):
         root = QHBoxLayout(self)
@@ -756,8 +758,13 @@ class CalculateTab(QWidget):
             u.toLocalFile().lower().endswith(SUPPORTED_EXTS) for u in event.mimeData().urls()
         ):
             event.acceptProposedAction()
+            self.drop_overlay.show_over()
+
+    def dragLeaveEvent(self, event):
+        self.drop_overlay.hide()
 
     def dropEvent(self, event):
+        self.drop_overlay.hide()
         self.load_files([u.toLocalFile() for u in event.mimeData().urls()])
 
     def _open_full_preview(self):
