@@ -259,6 +259,15 @@ QHeaderView::section {{
     font-size: 12px;
 }}
 
+QSlider::groove:horizontal {{ height: 4px; background: {BORDER}; border-radius: 2px; }}
+QSlider::sub-page:horizontal {{ background: {PRIMARY}; border-radius: 2px; }}
+QSlider::handle:horizontal {{
+    background: white; border: 2px solid {PRIMARY};
+    width: 10px; height: 10px; margin: -5px 0; border-radius: 7px;
+}}
+QSlider::sub-page:horizontal:disabled {{ background: #cbd5e1; }}
+QSlider::handle:horizontal:disabled {{ background: #eef1f5; border-color: #cbd5e1; }}
+
 /* ---------- progress ---------- */
 QProgressBar {{ background: {BORDER}; border: none; border-radius: 4px; max-height: 8px; qproperty-textVisible: false; }}
 QProgressBar::chunk {{

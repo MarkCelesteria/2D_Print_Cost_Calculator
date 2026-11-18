@@ -4,9 +4,9 @@ import math
 import traceback
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 from PyQt6.QtCore import Qt, QEvent, QTimer, QRectF, QPointF, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PyQt6.QtGui import QColor, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel,
     QMessageBox, QProgressDialog, QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget,
@@ -18,10 +18,12 @@ from printcost.ui.style import BORDER, MAGENTA, PREVIEW_BG, PRIMARY
 LIGHT_SLIDERS = [("exposure", "Exposure"), ("shadows", "Shadows"), ("highlights", "Highlights"),
                  ("contrast", "Contrast"), ("warmth", "Warmth"), ("balance", "Left / right"), ("even", "Even out")]
 UNDO_LIMIT = 15
+IMAGE_BG = "image"
+_orphans = []
 LIGHT_BRUSHES = ("lighten", "darken", "light_clear")
 EDGE_BRUSHES = ("sharpen", "smooth", "edge_clear")
-BRUSH_TYPES = [("None (move the picture)", "view"), ("Restore (bring back cutout)", "restore"),
-               ("Erase (remove background)", "erase"), ("Accessory (cap, cord, tassel)", "accessory"),
+BRUSH_TYPES = [("None", "view"), ("Restore", "restore"),
+               ("Erase", "erase"), ("Accessory", "accessory"),
                ("Lighten", "lighten"), ("Darken", "darken"),
                ("Sharpen edge", "sharpen"), ("Smooth edge", "smooth"),
                ("Clear light strokes", "light_clear"), ("Clear edge strokes", "edge_clear")]
@@ -30,7 +32,7 @@ BRUSH_HINTS = {
             "Restore, Erase and the edge brushes need the background removed first.",
     "restore": "Brings back parts the cutout removed (hair, shoulders, glasses).",
     "erase": "Removes leftover background.",
-    "accessory": "Paint over a cap board, cord or tassel that is missing or broken. It uses the high quality "
+    "accessory": "Paint over an accessory (hat, headwear, jewelry, glasses, scarf) that is missing or broken. It uses the high quality "
                  "shape, so run Remove background with High quality ticked first.",
     "lighten": "Brightens only where you paint (dark side of the hair, shadows). Raise Strength and paint "
                "again for more.",
@@ -289,6 +291,8 @@ class PhotoEditDialog(QDialog):
         self.work = np.asarray(self.work_img, dtype=np.uint8).copy()
         self.alpha = np.asarray(work.getchannel("A")).copy() if has_alpha else None
         self.bg = photofx.TRANSPARENT if has_alpha else photofx.BACKGROUNDS[0][1]
+        self.bg_image = None
+        self._bg_cache = {}
         self.feather, self.shrink, self.sharp = 10, 1, photofx.DEFAULT_SHARP
         self.light = photofx.default_light()
         self.result_image = None
@@ -314,6 +318,9 @@ class PhotoEditDialog(QDialog):
         self._brush_timer.timeout.connect(self._flush_brush)
         self._worker = None
         self._progress = None
+        self._creep = QTimer(self)
+        self._creep.setInterval(500)
+        self._creep.timeout.connect(self._creep_step)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(30)
@@ -334,6 +341,9 @@ class PhotoEditDialog(QDialog):
         if state.get("alpha") is not None and state["alpha"].shape == self.work.shape[:2]:
             self.alpha = state["alpha"].copy()
             self.bg = state["bg"]
+            self.bg_image = state.get("bg_image")
+            if self.bg == IMAGE_BG and self.bg_image is None:
+                self.bg = photofx.BACKGROUNDS[0][1]
             self.feather, self.shrink = state["feather"], state["shrink"]
             self.sharp = state.get("sharp", photofx.DEFAULT_SHARP)
             em = state.get("edge_map")
@@ -425,10 +435,10 @@ class PhotoEditDialog(QDialog):
         row.addWidget(self.clear_btn)
         v.addLayout(row)
         self.hq_check = QCheckBox("High quality (slower)")
-        self.hq_check.setToolTip("Better for graduation caps, tassels, veils and other accessories")
+        self.hq_check.setToolTip("Better for hats, headwear, veils and other accessories")
         v.addWidget(self.hq_check)
         self.detail_slider = self._slider(v, "Accessory detail", 0, 100, 0, self._set_detail)
-        self.detail_slider.setToolTip("Higher fills in cords and cap edges everywhere, but can make hair edges harder. "
+        self.detail_slider.setToolTip("Higher fills in accessory shapes and edges everywhere, but can make hair edges harder. "
                                       "To fix one spot only, use the Accessory brush.")
         self._detail_timer = QTimer(self)
         self._detail_timer.setSingleShot(True)
@@ -457,6 +467,11 @@ class PhotoEditDialog(QDialog):
         self.transparent_btn.setToolTip("Keep the background empty (prints as the paper color)")
         self.transparent_btn.clicked.connect(lambda: self._set_bg(photofx.TRANSPARENT))
         v.addWidget(self.transparent_btn)
+        self.image_btn = QPushButton("Import background…")
+        self.image_btn.setFixedHeight(32)
+        self.image_btn.setToolTip("Use a picture as the background")
+        self.image_btn.clicked.connect(self._import_bg)
+        v.addWidget(self.image_btn)
         self.feather_slider = self._slider(v, "Feather", 0, 60, self.feather, self._set_feather,
                                            lambda x: f"{x / 10:.1f}")
         self.shrink_slider = self._slider(v, "Shrink edge", 0, 5, self.shrink, self._set_shrink)
@@ -549,13 +564,26 @@ class PhotoEditDialog(QDialog):
             b.clicked.connect(lambda: s.setValue(s.value() + sign * step))
             return b
 
+        minus, plus = stepper("−", -1), stepper("+", 1)
         row.addWidget(name)
-        row.addWidget(stepper("−", -1))
+        row.addWidget(minus)
         row.addWidget(s, 1)
-        row.addWidget(stepper("+", 1))
+        row.addWidget(plus)
         row.addWidget(val)
         layout.addLayout(row)
+        s.group = (name, minus, plus, val)
         return s
+
+    @staticmethod
+    def _enable_slider(s, on):
+        s.setEnabled(on)
+        for w in s.group:
+            w.setEnabled(on)
+
+    def _sync_brush_sliders(self):
+        mode = self.canvas.mode
+        self._enable_slider(self.strength_slider, mode in ("lighten", "darken", "sharpen", "smooth"))
+        self._enable_slider(self.brush_slider, mode in BRUSH_COLORS)
 
     def _mode_button(self, text, mode):
         b = QPushButton(text)
@@ -567,24 +595,31 @@ class PhotoEditDialog(QDialog):
 
     def _sync_controls(self):
         has = self.alpha is not None
-        for w in (self.clear_btn, self.feather_slider, self.shrink_slider, self.sharp_slider, self.custom_btn,
-                  self.transparent_btn, *[b for b, _ in self.swatches]):
+        hq_ready = has and self._hq_shape is not None
+        for w in (self.clear_btn, self.custom_btn, self.transparent_btn, self.image_btn, *[b for b, _ in self.swatches]):
             w.setEnabled(has)
-        model = self.brush_combo.model()          # brushes that need a cutout are greyed out until there is one
+        for s in (self.feather_slider, self.shrink_slider, self.sharp_slider):
+            self._enable_slider(s, has)
+        self._enable_slider(self.detail_slider, has and self._parts is not None)
+        model = self.brush_combo.model()
         for i in range(self.brush_combo.count()):
-            if self.brush_combo.itemData(i) in CUTOUT_MODES:
-                model.item(i).setEnabled(has)
+            m = self.brush_combo.itemData(i)
+            if m in CUTOUT_MODES:
+                model.item(i).setEnabled(hq_ready if m == "accessory" else has)
         self.undo_btn.setEnabled(bool(self._undo))
         self.remove_btn.setText("Redo cutout" if has else "Remove background")
-        if not has and self.canvas.mode in CUTOUT_MODES:
+        mode = self.canvas.mode
+        if (mode in CUTOUT_MODES and not has) or (mode == "accessory" and not hq_ready):
             self._set_mode("view")
+        self._sync_brush_sliders()
         presets = {c.lower() for _, c in photofx.BACKGROUNDS}
         for b, color in self.swatches:
             self._style_swatch(b, color, color.lower() == self.bg.lower())
         clear = self.bg == photofx.TRANSPARENT
-        custom = self.bg.lower() not in presets and not clear
+        custom = self.bg.lower() not in presets and not clear and self.bg != IMAGE_BG
         self._style_swatch(self.custom_btn, self.bg if custom else "#ffffff", custom)
         self._style_swatch(self.transparent_btn, "#eef1f5", clear)
+        self._style_swatch(self.image_btn, "#eef1f5", self.bg == IMAGE_BG)
 
     @staticmethod
     def _style_swatch(button, color, selected):
@@ -614,7 +649,7 @@ class PhotoEditDialog(QDialog):
             if self.bg == photofx.TRANSPARENT:
                 view = photofx.over_checker(photofx.compose_transparent(self._lit, a, clean=not fast))
             else:
-                view = photofx.compose(self._lit, a, photofx.hex_to_rgb(self.bg), clean=not fast)
+                view = photofx.compose(self._lit, a, self._bg_value(*self.work.shape[:2]), clean=not fast)
         self.canvas.set_array(view)
 
     def _get_even_map(self):
@@ -658,10 +693,40 @@ class PhotoEditDialog(QDialog):
         self._render()
 
     def _pick_bg_color(self):
-        start = "#ffffff" if self.bg == photofx.TRANSPARENT else self.bg
+        start = "#ffffff" if self.bg in (photofx.TRANSPARENT, IMAGE_BG) else self.bg
         color = QColorDialog.getColor(QColor(start), self, "Background color")
         if color.isValid():
             self._set_bg(color.name())
+
+    def _import_bg(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import background", "", "Images (*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff *.avif *.jfif)")
+        if not path:
+            return
+        try:
+            with Image.open(path) as im:
+                img = ImageOps.exif_transpose(im).convert("RGB")
+        except Exception as e:
+            QMessageBox.warning(self, "Import background", f"Couldn't open that picture.\n\n{e}")
+            return
+        img.thumbnail((4000, 4000), Image.LANCZOS)
+        self.bg_image = img
+        self._bg_cache = {}
+        self._set_bg(IMAGE_BG)
+
+    def _bg_value(self, h, w, box=None, cache=True):
+        if self.bg != IMAGE_BG:
+            return photofx.hex_to_rgb(self.bg)
+        arr = self._bg_cache.get((w, h))
+        if arr is None:
+            src = self.bg_image
+            k = max(w / src.width, h / src.height)
+            r = src.resize((max(w, round(src.width * k)), max(h, round(src.height * k))), Image.LANCZOS)
+            x, y = (r.width - w) // 2, (r.height - h) // 2
+            arr = np.asarray(r.crop((x, y, x + w, y + h)), dtype=np.uint8)
+            if cache:
+                self._bg_cache[(w, h)] = arr
+        return arr if box is None else arr[box[1]:box[3], box[0]:box[2]]
 
     def _set_feather(self, v):
         self.feather = v
@@ -677,6 +742,8 @@ class PhotoEditDialog(QDialog):
 
     def _clear_cutout(self):
         self.alpha = None
+        self._parts = None
+        self._hq_shape = None
         self.edge_map[:] = 0
         self._alpha_changed()
         self._undo.clear()
@@ -779,20 +846,60 @@ class PhotoEditDialog(QDialog):
         self._run_matte(True)
 
     def _run_matte(self, hq=False):
-        self._progress = QProgressDialog(
-            "Removing the background (high quality, this can take up to a minute)..." if hq
-            else "Removing the background...", None, 0, 0, self)
+        self._progress = QProgressDialog("Removing the background...", None, 0, 100 if hq else 0, self)
         self._progress.setWindowTitle("Please wait")
         self._progress.setWindowModality(Qt.WindowModality.WindowModal)
         self._progress.setMinimumDuration(0)
+        self._progress.setAutoClose(False)
+        self._progress.setAutoReset(False)
+        if hq:
+            self._progress.setValue(0)
+        self._progress.setFixedSize(440, 110)
+        self._progress.canceled.connect(self._cancel_matte)
         self._progress.show()
         worker = matting.MatteWorker(self.work_img, self, hq=hq)
+        if hq:
+            worker.stage.connect(self._matte_stage)
         worker.done.connect(self._matte_done)
         worker.failed.connect(self._matte_failed)
         self._worker = worker
-        worker.start()
+        worker.start(worker.Priority.LowPriority)
+
+    def _matte_stage(self, value, text):
+        if self._progress is None:
+            return
+        self._progress.setValue(value)
+        self._progress.setLabelText(text)
+        if value == 20:
+            self._creep.start()
+        else:
+            self._creep.stop()
+
+    def _creep_step(self):
+        if self._progress is None or self._progress.value() >= 90:
+            self._creep.stop()
+            return
+        v = self._progress.value()
+        self._progress.setValue(v + max(1, (90 - v) // 20))
+
+    def _cancel_matte(self):
+        w = self._worker
+        if not isinstance(w, matting.MatteWorker) or not w.isRunning():
+            return
+        w.cancel()
+        for sig in (w.done, w.failed, w.stage):
+            try:
+                sig.disconnect()
+            except TypeError:
+                pass
+        w.setParent(None)
+        _orphans.append(w)
+        w.finished.connect(lambda: _orphans.remove(w))
+        self._worker = None
+        self._close_progress()
 
     def _matte_done(self, alpha):
+        self._creep.stop()
         if self._progress is not None:
             self._progress.setLabelText("Finishing the cutout...")
             QApplication.processEvents()
@@ -839,6 +946,7 @@ class PhotoEditDialog(QDialog):
         QMessageBox.warning(self, "Couldn't remove the background", msg)
 
     def _close_progress(self):
+        self._creep.stop()
         if self._progress is not None:
             try:
                 self._progress.canceled.disconnect()
@@ -859,8 +967,7 @@ class PhotoEditDialog(QDialog):
         self.brush_combo.blockSignals(True)
         self.brush_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.brush_combo.blockSignals(False)
-        self.strength_slider.setEnabled(mode in ("lighten", "darken", "sharpen", "smooth"))
-        self.brush_slider.setEnabled(mode in BRUSH_COLORS)
+        self._sync_brush_sliders()
         if mode in ("lighten", "darken"):
             self.strength_slider.setValue(self.light_strength)
         elif mode in ("sharpen", "smooth"):
@@ -919,7 +1026,7 @@ class PhotoEditDialog(QDialog):
                 piece = photofx.over_checker(photofx.compose_transparent(self._lit[Y0:Y1, X0:X1], a, clean=False),
                                              origin=(X0, Y0))
             else:
-                piece = photofx.compose(self._lit[Y0:Y1, X0:X1], a, photofx.hex_to_rgb(self.bg), clean=False)
+                piece = photofx.compose(self._lit[Y0:Y1, X0:X1], a, self._bg_value(h, w, (X0, Y0, X1, Y1)), clean=False)
             self.canvas.array[y0:y1, x0:x1] = piece[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0]
         self.canvas.update()
 
@@ -1049,7 +1156,7 @@ class PhotoEditDialog(QDialog):
             if self.bg == photofx.TRANSPARENT:
                 out = photofx.compose_transparent(out, a, clean=True)
             else:
-                out = photofx.compose(out, a, photofx.hex_to_rgb(self.bg), clean=True)
+                out = photofx.compose(out, a, self._bg_value(*out.shape[:2], cache=False), clean=True)
             del a
         return Image.fromarray(out)
 
@@ -1096,7 +1203,7 @@ class PhotoEditDialog(QDialog):
             self.result_image = image
             self.result_state = {
                 "alpha": None if self.alpha is None else self.alpha.copy(),
-                "bg": self.bg, "feather": self.feather, "shrink": self.shrink, "sharp": self.sharp,
+                "bg": self.bg, "bg_image": self.bg_image, "feather": self.feather, "shrink": self.shrink, "sharp": self.sharp,
                 "box": self.box,
                 "light": dict(self.light),
                 "light_map": self.light_map.copy(), "edge_map": self.edge_map.copy(),

@@ -1,3 +1,4 @@
+import copy
 import math
 import os
 import re
@@ -6,23 +7,23 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF, QSize, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF, QSize, QTimer, QThread
 from PyQt6.QtGui import QPainter, QColor, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QGridLayout, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QSpinBox, QDoubleSpinBox,
     QCheckBox, QLineEdit, QPushButton, QFileDialog, QMessageBox, QWidget, QDialogButtonBox, QApplication,
-    QSizePolicy, QFrame, QScrollArea, QSlider, QInputDialog, QTabWidget, QMenu,
+    QSizePolicy, QFrame, QSlider, QInputDialog, QMenu,
 )
 
 from printcost.core import idphoto
 from printcost.core import pricing
-from printcost.core.analyzer import IMAGE_EXTS, load_image_rgb, make_temp_dir
+from printcost.core.analyzer import IMAGE_EXTS, load_image_rgb
 from printcost.ui.icons import make_icon
 from printcost.ui.idphoto_editor import LayoutEditorDialog
 from printcost.ui.photo_edit_dialog import FitWidthScroll, PhotoEditDialog
 from printcost.ui.notes import label_style
 from printcost.ui.preview_widget import pil_to_qpixmap
-from printcost.ui.style import BORDER, MUTED, PREVIEW_BG, PRIMARY, MAGENTA
+from printcost.ui.style import BORDER, MUTED, PREVIEW_BG, MAGENTA
 
 PRICING_MODES = [
     ("Calculated (ink + paper per sheet)", "calculated"),
@@ -94,17 +95,140 @@ class NoWheelCombo(QComboBox):
 
 # ---------------- sheet preview ----------------
 
+_hi_workers = []
+
+
+class HiSheetWorker(QThread):
+    done = pyqtSignal(object, int)
+
+    def __init__(self, src, spec, landscape, sheets, index, sig, ppi, generation):
+        super().__init__()
+        self.args = (src, spec, landscape, sheets, index)
+        self.sig, self.ppi, self.generation = sig, ppi, generation
+
+    def run(self):
+        try:
+            img = idphoto.render_sheet(*self.args, sig=self.sig, ppi=self.ppi)
+        except Exception:
+            img = None
+        self.done.emit(img, self.generation)
+
+
 class SheetPreview(QWidget):
     """One printed sheet, drawn to scale."""
+
+    hi_needed = pyqtSignal()
+    MAX_ZOOM = 6.0
+    HI_ZOOM = 1.5
+    PAD = 12
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(300, 380)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setToolTip("Scroll to zoom, drag to move, double-click to zoom in or out")
         self._pix = None
+        self._hi = None
+        self.generation = 0
+        self.zoom = 1.0
+        self.cx = self.cy = 0.5
+        self._drag = None
+        self._hi_timer = QTimer(self)
+        self._hi_timer.setSingleShot(True)
+        self._hi_timer.setInterval(300)
+        self._hi_timer.timeout.connect(self._hi_due)
 
     def set_image(self, pil_img):
         self._pix = pil_to_qpixmap(pil_img) if pil_img is not None else None
+        self._hi = None
+        self.generation += 1
+        self._clamp()
+        self._want_hi()
+        self.update()
+
+    def set_hi(self, pil_img, generation):
+        if pil_img is None or generation != self.generation or self._pix is None:
+            return
+        self._hi = pil_to_qpixmap(pil_img)
+        self.update()
+
+    def _want_hi(self):
+        if self._pix is not None and self.zoom > self.HI_ZOOM:
+            self._hi_timer.start()
+
+    def _hi_due(self):
+        if self._hi is None and self._pix is not None and self.zoom > self.HI_ZOOM:
+            self.hi_needed.emit()
+
+    def _base(self):
+        s = min((self.width() - 2 * self.PAD) / self._pix.width(),
+                (self.height() - 2 * self.PAD) / self._pix.height())
+        return self._pix.width() * s, self._pix.height() * s
+
+    def _clamp(self):
+        self.zoom = max(1.0, min(self.MAX_ZOOM, self.zoom))
+        self.setCursor(Qt.CursorShape.OpenHandCursor if self.zoom > 1 else Qt.CursorShape.ArrowCursor)
+        if self._pix is None:
+            return
+        w0, h0 = self._base()
+        hx = self.width() / 2 / (w0 * self.zoom)
+        hy = self.height() / 2 / (h0 * self.zoom)
+        self.cx = 0.5 if hx >= 0.5 else max(hx, min(1 - hx, self.cx))
+        self.cy = 0.5 if hy >= 0.5 else max(hy, min(1 - hy, self.cy))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._clamp()
+
+    def wheelEvent(self, event):
+        if self._pix is None:
+            return
+        m = event.position()
+        w0, h0 = self._base()
+        fx = self.cx + (m.x() - self.width() / 2) / (w0 * self.zoom)
+        fy = self.cy + (m.y() - self.height() / 2) / (h0 * self.zoom)
+        self.zoom = max(1.0, min(self.MAX_ZOOM, self.zoom * 1.2 ** (event.angleDelta().y() / 120)))
+        self.cx = fx - (m.x() - self.width() / 2) / (w0 * self.zoom)
+        self.cy = fy - (m.y() - self.height() / 2) / (h0 * self.zoom)
+        self._clamp()
+        self._want_hi()
+        self.update()
+        event.accept()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._pix is not None and self.zoom > 1:
+            self._drag = (event.position(), self.cx, self.cy)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def mouseMoveEvent(self, event):
+        if self._drag is None:
+            return
+        start, cx, cy = self._drag
+        w0, h0 = self._base()
+        d = event.position() - start
+        self.cx = cx - d.x() / (w0 * self.zoom)
+        self.cy = cy - d.y() / (h0 * self.zoom)
+        self._clamp()
+        self.update()
+
+    def mouseReleaseEvent(self, event):
+        self._drag = None
+        self._clamp()
+
+    def mouseDoubleClickEvent(self, event):
+        if self._pix is None:
+            return
+        if self.zoom > 1.05:
+            self.zoom = 1.0
+            self.cx = self.cy = 0.5
+        else:
+            m = event.position()
+            w0, h0 = self._base()
+            self.cx = 0.5 + (m.x() - self.width() / 2) / w0
+            self.cy = 0.5 + (m.y() - self.height() / 2) / h0
+            self.zoom = 3.0
+        self._clamp()
+        self._want_hi()
         self.update()
 
     def paintEvent(self, event):
@@ -112,15 +236,29 @@ class SheetPreview(QWidget):
         p.fillRect(self.rect(), QColor(PREVIEW_BG))
         if self._pix is None:
             return
+        w0, h0 = self._base()
+        dw, dh = w0 * self.zoom, h0 * self.zoom
+        rect = QRectF(self.width() / 2 - self.cx * dw, self.height() / 2 - self.cy * dh, dw, dh)
+        sharp = self._hi is not None and self.zoom > self.HI_ZOOM
+        pix = self._hi if sharp else self._pix
+        vis = rect.intersected(QRectF(self.rect()))
+        if vis.isEmpty():
+            return
+        sx, sy = pix.width() / dw, pix.height() / dh
+        src = QRectF((vis.x() - rect.x()) * sx, (vis.y() - rect.y()) * sy, vis.width() * sx, vis.height() * sy)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        pad = 12
-        s = min((self.width() - 2 * pad) / self._pix.width(), (self.height() - 2 * pad) / self._pix.height())
-        w, h = self._pix.width() * s, self._pix.height() * s
-        rect = QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
-        p.drawPixmap(rect, self._pix, QRectF(self._pix.rect()))
+        p.drawPixmap(vis, pix, src)
         p.setPen(QPen(QColor(BORDER), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(rect)
+        if self.zoom > 1:
+            label = f"{self.zoom * 100:.0f}%" + ("" if sharp or self.zoom <= self.HI_ZOOM else " …")
+            badge = QRectF(self.width() - 76, 8, 68, 22)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(15, 27, 45, 170))
+            p.drawRoundedRect(badge, 6, 6)
+            p.setPen(QColor("white"))
+            p.drawText(badge, Qt.AlignmentFlag.AlignCenter, label)
 
 
 # ---------------- positioning the face ----------------
@@ -415,6 +553,8 @@ class IdPhotoDialog(QDialog):
         self.rows = []
         self.sig_img = None        # the signature (ink on white), or None
         self.sig_path = None
+        self._hi_worker = None
+        self._hi_pending = False
         self.manual = (job or {}).get("spec", {}).get("manual")   # a layout arranged by hand, or None
         self._manual_key = None
         self._manual_dropped = False
@@ -683,6 +823,7 @@ class IdPhotoDialog(QDialog):
         left.addWidget(self.buttons)
 
         self.preview = SheetPreview()
+        self.preview.hi_needed.connect(self._request_hi)
         right.addWidget(self.preview, 1)
         nav = QHBoxLayout()
         self.prev_btn = QPushButton("‹")
@@ -1143,6 +1284,33 @@ class IdPhotoDialog(QDialog):
                                  "(shown to scale)")
         self.prev_btn.setEnabled(self.sheet_index > 0)
         self.next_btn.setEnabled(self.sheet_index < n - 1)
+
+    def _request_hi(self):
+        plan = getattr(self, "_plan", None)
+        if self.src is None or not plan:
+            return
+        if self._hi_worker is not None:
+            self._hi_pending = True
+            return
+        spec = copy.deepcopy(self._spec())
+        landscape, sheets = plan
+        sw, sh = idphoto.sheet_size(spec["paper"], landscape)
+        ppi = min(idphoto.EXPORT_PPI, 4000 / max(sw, sh))
+        worker = HiSheetWorker(self.src, spec, landscape, sheets, self.sheet_index, self.sig_img, ppi,
+                               self.preview.generation)
+        worker.done.connect(self._hi_done)
+        worker.finished.connect(lambda w=worker: _hi_workers.remove(w))
+        _hi_workers.append(worker)
+        self._hi_worker = worker
+        worker.start(worker.Priority.LowPriority)
+
+    def _hi_done(self, img, generation):
+        self._hi_worker = None
+        self.preview.set_hi(img, generation)
+        if self._hi_pending:
+            self._hi_pending = False
+            self._request_hi()
+
 
     # ---------------- arranging by hand ----------------
 

@@ -1,3 +1,4 @@
+import gc
 import hashlib
 import importlib.util
 import os
@@ -141,6 +142,10 @@ def _get_session(kind="fast"):
     import onnxruntime as ort
     opts = ort.SessionOptions()
     opts.log_severity_level = 3
+    opts.intra_op_num_threads = max(1, (os.cpu_count() or 4) - 2)
+    opts.inter_op_num_threads = 1
+    opts.enable_cpu_mem_arena = False
+    opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
     try:
         _sessions[kind] = ort.InferenceSession(path, opts, providers=["CPUExecutionProvider"])
     except Exception as e:
@@ -235,26 +240,33 @@ def merge_matte(soft, hq, detail=50):
     return merge_parts(soft, hq, detail)[0]
 
 
-def compute_matte(img, hq=False):
-    matte = _fast_matte(img)
-    return merge_matte(matte, _hq_matte(img)) if hq else matte
-
-
 class MatteWorker(QThread):
     done = pyqtSignal(object)
     failed = pyqtSignal(str)
+    stage = pyqtSignal(int, str)
 
     def __init__(self, img, parent=None, hq=False):
         super().__init__(parent)
         self.img = img
         self.hq = hq is True
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
 
     def run(self):
         try:
             self.parts = None
             if self.hq:
+                self.stage.emit(5, "Finding the person...")
                 soft = _fast_matte(self.img)
+                if self._cancel:
+                    return
+                self.stage.emit(20, "Finding accessories (this is the slow part)...")
                 self.parts = (soft, _hq_matte(self.img))
+                _sessions.pop("hq", None)
+                gc.collect()
+                self.stage.emit(92, "Merging the cutout...")
                 self.done.emit(merge_matte(*self.parts))
             else:
                 self.done.emit(_fast_matte(self.img))
