@@ -9,11 +9,12 @@ from PyQt6.QtCore import Qt, QEvent, QTimer, QRectF, QPointF, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel,
-    QMessageBox, QProgressDialog, QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget,
+    QMessageBox, QProgressDialog, QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget, QProgressBar
 )
 
 from printcost.core import matting, photofx
 from printcost.ui.style import BORDER, MAGENTA, PREVIEW_BG, PRIMARY
+from printcost.ui.download_dialog import DownloadDialog
 
 LIGHT_SLIDERS = [("exposure", "Exposure"), ("shadows", "Shadows"), ("highlights", "Highlights"),
                  ("contrast", "Contrast"), ("warmth", "Warmth"), ("balance", "Left / right"), ("even", "Even out")]
@@ -767,13 +768,7 @@ class PhotoEditDialog(QDialog):
             "It is saved on this PC and works offline afterwards.\n\nDownload it now?")
         if ask != QMessageBox.StandardButton.Yes:
             return
-        self._progress = QProgressDialog("Downloading the background remover...", "Cancel", 0, 100, self)
-        self._progress.setWindowTitle("Downloading")
-        self._progress.setWindowModality(Qt.WindowModality.WindowModal)
-        self._progress.setMinimumDuration(0)
-        self._progress.setAutoClose(False)
-        self._progress.setAutoReset(False)
-        self._progress.setValue(0)
+        self._progress = DownloadDialog(self, "Downloading", "Downloading the background remover...")
         worker = matting.ModelDownloadWorker(self)
         worker.progress.connect(self._download_progress)
         worker.done.connect(self._download_done)
@@ -783,10 +778,8 @@ class PhotoEditDialog(QDialog):
         worker.start()
 
     def _download_progress(self, done, total):
-        if total and self._progress is not None:
-            self._progress.setValue(int(done * 100 / total))
-            base = self._progress.labelText().split(" (")[0]
-            self._progress.setLabelText(f"{base} ({done // 1048576} of {total // 1048576} MB)")
+        if self._progress is not None:
+            self._progress.update_progress(done, total)
 
     def _download_done(self):
         self._close_progress()
@@ -812,13 +805,7 @@ class PhotoEditDialog(QDialog):
             self._import_hq()
 
     def _download_hq(self):
-        self._progress = QProgressDialog("Downloading the high quality pack...", "Cancel", 0, 100, self)
-        self._progress.setWindowTitle("Downloading")
-        self._progress.setWindowModality(Qt.WindowModality.WindowModal)
-        self._progress.setMinimumDuration(0)
-        self._progress.setAutoClose(False)
-        self._progress.setAutoReset(False)
-        self._progress.setValue(0)
+        self._progress = DownloadDialog(self, "Downloading", "Downloading the high quality pack...")
         worker = matting.ModelDownloadWorker(self, kind="hq")
         worker.progress.connect(self._download_progress)
         worker.done.connect(self._hq_download_done)
@@ -847,6 +834,9 @@ class PhotoEditDialog(QDialog):
 
     def _run_matte(self, hq=False):
         self._progress = QProgressDialog("Removing the background...", None, 0, 100 if hq else 0, self)
+        bar = QProgressBar(self._progress)
+        bar.setTextVisible(False)
+        self._progress.setBar(bar)
         self._progress.setWindowTitle("Please wait")
         self._progress.setWindowModality(Qt.WindowModality.WindowModal)
         self._progress.setMinimumDuration(0)

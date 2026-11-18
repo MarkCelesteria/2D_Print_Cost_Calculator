@@ -4,12 +4,13 @@ import time
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QSystemTrayIcon, QMenu, QMessageBox,
-    QWidget, QVBoxLayout, QHBoxLayout, QProgressDialog, QSplashScreen
+    QWidget, QVBoxLayout, QHBoxLayout, QSplashScreen
 )
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QAction, QDesktopServices, QPen, QPainterPath, QFont
 from PyQt6.QtCore import Qt, QTimer, QUrl, QRectF
 
 from printcost.ui.style import QSS, TEXT, MUTED, BORDER, CMYK_COLORS, CmykBar
+from printcost.ui.download_dialog import DownloadDialog
 
 
 def make_app_icon():
@@ -214,13 +215,7 @@ class MainWindow(QMainWindow):
             self._remind_later()
 
     def _start_update(self, info):
-        self._progress = QProgressDialog("Downloading the update...", "Cancel", 0, 100, self)
-        self._progress.setWindowTitle("Updating")
-        self._progress.setWindowModality(Qt.WindowModality.WindowModal)
-        self._progress.setMinimumDuration(0)
-        self._progress.setAutoClose(False)
-        self._progress.setAutoReset(False)
-        self._progress.setValue(0)
+        self._progress = DownloadDialog(self, "Updating", "Downloading the update...")
 
         worker = updater.DownloadWorker(info, self)
         worker.progress.connect(self._on_download_progress)
@@ -231,8 +226,7 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _on_download_progress(self, done, total):
-        if total:
-            self._progress.setValue(int(done * 100 / total))
+        self._progress.update_progress(done, total)
 
     def _on_download_done(self, path):
         self._progress.close()
