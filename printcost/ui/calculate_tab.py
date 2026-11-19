@@ -1,4 +1,5 @@
 import os
+import time
 
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -28,9 +29,11 @@ from printcost.ui.idphoto_dialog import IdPhotoDialog
 from printcost.ui.layout_preview_dialog import SheetsPreviewDialog, BookPreviewDialog
 from printcost.ui.help import HelpButton, with_help
 from printcost.ui.notes import label_style, notice
-from printcost.ui.style import MAGENTA_DARK, ElidedLabel
+from printcost.ui.style import MAGENTA_DARK, PRIMARY_DARK, ElidedLabel
 from printcost.ui.drop_overlay import DropOverlay
 
+SEE_MORE = "See more sizes…"
+RECENT_SECONDS = 3 * 24 * 60 * 60
 INK_TINTS = ["#e0f4fb", "#fde4f2", "#fff7c9", "#e9edf2"]
 
 PCT_LABELS = [
@@ -348,8 +351,8 @@ class CalculateTab(QWidget):
         for box in (self.flip_combo, self.output_combo, self.back_combo):
             box.currentIndexChanged.connect(self._duplex_edited)
 
-        self.paper_combo.currentIndexChanged.connect(self._reload_layout)
-        self.paper_combo.currentIndexChanged.connect(self._on_paper_changed)
+        self.paper_combo.currentIndexChanged.connect(self._on_paper_index_changed)
+        self.paper_combo.activated.connect(self._on_paper_activated)
         self.fit_combo.currentIndexChanged.connect(self._reload_layout)
         self.per_page_combo.currentIndexChanged.connect(self._reload_layout)
 
@@ -469,18 +472,91 @@ class CalculateTab(QWidget):
         if current:
             self.type_combo.setCurrentText(current)
 
-    def _refresh_paper_options(self):
-        current = self.paper_combo.currentText()
+    _last_paper = ""
+    _session_papers = frozenset()
+
+    def _all_paper_names(self):
+        return [p["name"] for p in self.settings["paper_sizes"]]
+
+    def _shown_paper_names(self):
+        """Common sizes + sizes picked from "See more" in the last 3 days + the current one, in list order."""
+        names = self._all_paper_names()
+        now = time.time()
+        recent = {n: t for n, t in self.settings.get("recent_papers", {}).items()
+                  if n in names and now - t < RECENT_SECONDS}
+        self.settings["recent_papers"] = recent
+        keep = set(self.settings.get("common_paper_sizes") or []) | set(recent) | set(self._session_papers)
+        shown = [n for n in names if n in keep]
+        return shown or names
+
+    def _rebuild_paper_combo(self, select):
+        """Rebuilds the list without firing signals, then selects `select` if it's there."""
+        shown = self._shown_paper_names()
         self.paper_combo.blockSignals(True)
         self.paper_combo.clear()
-        names = [p["name"] for p in self.settings["paper_sizes"]]
-        self.paper_combo.addItems(names)
-        default = next((n for n in names if n.startswith("Short")), None)
-        if current in names:
-            self.paper_combo.setCurrentText(current)
-        elif default:
-            self.paper_combo.setCurrentText(default)
+        self.paper_combo.addItems(shown)
+        if len(shown) < len(self._all_paper_names()):
+            self.paper_combo.insertSeparator(self.paper_combo.count())
+            self.paper_combo.addItem(SEE_MORE)
+            more = self.paper_combo.findText(SEE_MORE)
+            font = self.paper_combo.font()
+            font.setBold(True)
+            self.paper_combo.setItemData(more, font, Qt.ItemDataRole.FontRole)
+            self.paper_combo.setItemData(more, QColor(PRIMARY_DARK), Qt.ItemDataRole.ForegroundRole)
+        if select in shown:
+            self.paper_combo.setCurrentText(select)
         self.paper_combo.blockSignals(False)
+
+    def _select_paper(self, name):
+        """Selects a size without firing signals, and keeps it visible even if it's an uncommon one."""
+        if name not in self._all_paper_names():
+            return
+        self._session_papers = {name}
+        self._rebuild_paper_combo(name)
+        self._last_paper = name
+
+    def _remember_paper(self, name):
+        if name in (self.settings.get("common_paper_sizes") or []):
+            return
+        self.settings.setdefault("recent_papers", {})[name] = time.time()
+        try:
+            disk = pricing.load_settings()
+            disk["recent_papers"] = dict(self.settings["recent_papers"])
+            pricing.save_settings(disk)
+        except Exception:
+            pass
+
+    def _on_paper_index_changed(self, _index=None):
+        text = self.paper_combo.currentText()
+        if text == SEE_MORE:
+            return
+        self._last_paper = text
+        self._reload_layout()
+        self._on_paper_changed()
+
+    def _on_paper_activated(self, index):
+        text = self.paper_combo.itemText(index)
+        if text != SEE_MORE:
+            self._remember_paper(text)
+            return
+        hidden = [n for n in self._all_paper_names() if self.paper_combo.findText(n) < 0]
+        name, ok = QInputDialog.getItem(self, "More paper sizes",
+                                        "Pick a size. It stays in the list for 3 days.", hidden, 0, False)
+        if ok and name:
+            self._remember_paper(name)
+            self._session_papers = set()
+            self._rebuild_paper_combo(self._last_paper)
+            self.paper_combo.setCurrentText(name)
+        else:
+            self._rebuild_paper_combo(self._last_paper)
+
+    def _refresh_paper_options(self):
+        names = self._all_paper_names()
+        default = next((n for n in names if n.startswith("Short")), None)
+        current = self._last_paper if self._last_paper in names else default
+        self._session_papers = {current} if current else set()
+        self._rebuild_paper_combo(current)
+        self._last_paper = self.paper_combo.currentText()
         self._update_paper_note()
 
     def load_file(self, path, auto_calculate=False):
@@ -522,10 +598,8 @@ class CalculateTab(QWidget):
                 self.doc_size = None
         if self.doc_size and is_new:  # only for a newly chosen file, never override a manual choice later
             idx = closest_paper(self.doc_size, self.settings["paper_sizes"])
-            if idx is not None and idx != self.paper_combo.currentIndex():
-                self.paper_combo.blockSignals(True)
-                self.paper_combo.setCurrentIndex(idx)
-                self.paper_combo.blockSignals(False)
+            if idx is not None and self.settings["paper_sizes"][idx]["name"] != self.paper_combo.currentText():
+                self._select_paper(self.settings["paper_sizes"][idx]["name"])
                 self._paper_auto_note = f"Paper set to {self.paper_combo.currentText()} to match the document."
         self._update_paper_note()
 
@@ -832,10 +906,8 @@ class CalculateTab(QWidget):
         self._update_input_states()
         if before and after and max(abs(a - b) for a, b in zip(before, after)) > 0.05:
             idx = closest_paper(after, self.settings["paper_sizes"])
-            if idx is not None and idx != self.paper_combo.currentIndex():
-                self.paper_combo.blockSignals(True)
-                self.paper_combo.setCurrentIndex(idx)
-                self.paper_combo.blockSignals(False)
+            if idx is not None and self.settings["paper_sizes"][idx]["name"] != self.paper_combo.currentText():
+                self._select_paper(self.settings["paper_sizes"][idx]["name"])
         self._new_document = False
         self._detect_paper()
         self._clear_results()
@@ -1078,12 +1150,9 @@ class CalculateTab(QWidget):
         self.manual_discount = None
         self._clear_results()
         self._load_id += 1
-        idx = self.paper_combo.findText(job["spec"]["paper"]["name"])
-        if idx >= 0 and idx != self.paper_combo.currentIndex():
-            self.paper_combo.blockSignals(True)
-            self.paper_combo.setCurrentIndex(idx)
-            self.paper_combo.blockSignals(False)
-        self._new_document = False  # the poster's paper was chosen on purpose: don't auto-switch it
+        if job["spec"]["paper"]["name"] != self.paper_combo.currentText():
+            self._select_paper(job["spec"]["paper"]["name"])
+        self._new_document = False
         self._on_document_loaded(pdf_path, count, first, False, load_id=self._load_id)
         self.pages_input.clear()
         self.file_label.setText(os.path.basename(job["source"]))
@@ -1220,11 +1289,16 @@ class CalculateTab(QWidget):
         mode_map = {"Color": "color", "Grayscale": "grayscale", "Black & White": "bw"}
         mode = mode_map[self.mode_combo.currentText()]
         quality = self.quality_combo.currentText().lower()
-        ink_multiplier = self.settings["quality_multipliers"].get(quality, 1.0) * ptype["ink_factor"]
+        area_factor = size["width_in"] * size["height_in"] / self.settings["ink_reference_in2"]
+        ink_multiplier = self.settings["quality_multipliers"].get(quality, 1.0) * ptype["ink_factor"] * area_factor
         black_mix = self.settings.get("high_black_mix", 0.0) / 100 if quality == "high" else 0.0
         self.print_mode = mode
         self.print_quality = quality
         self._calc_load_id = self._load_id
+
+        min_bw = pricing.size_rule(size, "min_bw", self.settings.get("min_price_per_page"))
+        min_color = pricing.size_rule(size, "min_color", self.settings.get("min_price_color"))
+        max_price = pricing.size_rule(size, "max", self.settings.get("max_price_per_page"))
 
         cached = self._analysis_cache.get(mode)
         if cached is not None:
@@ -1234,11 +1308,11 @@ class CalculateTab(QWidget):
             result = compute_cost(
                 chosen, self.settings["ink_prices"], sheet_price, percentages,
                 page_numbers=selected_pages,
-                min_price_per_page=self.settings.get("min_price_per_page"),
-                min_price_color=self.settings.get("min_price_color"),
+                min_price_per_page=min_bw,
+                min_price_color=min_color,
                 color_threshold_pct=self.settings.get("color_threshold_pct", 0.5),
                 black_mix=black_mix, ink_multiplier=ink_multiplier,
-                max_price_per_page=self.settings.get("max_price_per_page"), sheets=sheets,
+                max_price_per_page=max_price, sheets=sheets,
             )
             self.status_label.setText("Done (reused the earlier scan)." + (" (approximate estimate)" if cached_approx else ""))
             self._render_results(result, self.paper, cached_approx)
@@ -1247,12 +1321,12 @@ class CalculateTab(QWidget):
         self.worker = AnalyzeWorker(
             self.resolved_pdf_path, self.file_path,
             self.settings["ink_prices"], sheet_price, percentages, self.is_approx, mode,
-            min_price=self.settings.get("min_price_per_page"),
+            min_price=min_bw,
             ink_multiplier=ink_multiplier,
-            min_price_color=self.settings.get("min_price_color"),
+            min_price_color=min_color,
             color_threshold_pct=self.settings.get("color_threshold_pct", 0.5),
             pages=selected_pages, black_mix=black_mix,
-            max_price=self.settings.get("max_price_per_page"), sheets=sheets,
+            max_price=max_price, sheets=sheets,
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.succeeded.connect(self._on_success)

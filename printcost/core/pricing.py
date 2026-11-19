@@ -79,6 +79,10 @@ DEFAULT_SETTINGS = {
     },
     "quality_multipliers": {"draft": 0.7, "standard": 1.0, "high": 1.5},
     "high_black_mix": 60.0,
+    "ink_reference_in2": 93.5,
+    "common_paper_sizes": ["Short (8.5x11 in)", "Long (8.5x13 in)", "Legal (8.5x14 in)",
+                           "A4 (8.27x11.69 in)", "4R (4x6 in)"],
+    "recent_papers": {},
     "min_price_per_page": None,
     "min_price_color": None,
     "max_price_per_page": None,
@@ -136,6 +140,11 @@ def bulk_pct(tiers, pages):
     """Highest bulk discount % whose page range contains `pages`."""
     return max((t["pct"] for t in tiers or []
                 if t["min"] <= pages and (not t.get("max") or pages <= t["max"])), default=0.0)
+
+
+def size_rule(size, key, default):
+    value = size.get(key)
+    return default if value is None else value
 
 
 def save_settings(settings: dict):

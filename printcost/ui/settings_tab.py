@@ -132,11 +132,19 @@ class PaperSizeDialog(QDialog):
         self.width_input = QLineEdit(str(existing["width_in"]) if existing else "")
         self.height_input = QLineEdit(str(existing["height_in"]) if existing else "")
         self.price_input = QLineEdit(str(existing["price"]) if existing else "")
+        self.min_bw_input = QLineEdit(_opt_str(existing.get("min_bw")) if existing else "")
+        self.min_color_input = QLineEdit(_opt_str(existing.get("min_color")) if existing else "")
+        self.max_input = QLineEdit(_opt_str(existing.get("max")) if existing else "")
+        for box in (self.min_bw_input, self.min_color_input, self.max_input):
+            box.setPlaceholderText("same as Pricing Rules")
 
         form.addRow("Name:", self.name_input)
         form.addRow("Width (in):", self.width_input)
         form.addRow("Height (in):", self.height_input)
         form.addRow("Price per sheet:", self.price_input)
+        form.addRow("Min / page (B&W):", self.min_bw_input)
+        form.addRow("Min / page (Color):", self.min_color_input)
+        form.addRow("Max / page:", self.max_input)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._on_accept)
@@ -155,6 +163,9 @@ class PaperSizeDialog(QDialog):
                 "width_in": float(self.width_input.text()),
                 "height_in": float(self.height_input.text()),
                 "price": float(self.price_input.text()),
+                "min_bw": self._optional(self.min_bw_input),
+                "min_color": self._optional(self.min_color_input),
+                "max": self._optional(self.max_input),
             }
             self.accept()
         except ValueError:
@@ -175,6 +186,11 @@ class DiscountDialog(QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
         self.result_data = None
+
+    @staticmethod
+    def _optional(box):
+        raw = box.text().strip()
+        return float(raw) if raw else None
 
     def _on_accept(self):
         try:
@@ -393,12 +409,18 @@ class SettingsTab(QWidget):
         header.setObjectName("cardHeader")
         paper_layout.addWidget(header)
 
-        self.paper_table = QTableWidget(0, 4)
-        self.paper_table.setHorizontalHeaderLabels(["Name", "Width (in)", "Height (in)", "Price / sheet"])
+        self.paper_table = QTableWidget(0, 5)
+        self.paper_table.setHorizontalHeaderLabels(["Name", "Width (in)", "Height (in)", "Price / sheet",
+                                                    "Min B&W / Color / Max"])
         self.paper_table.verticalHeader().setVisible(False)
         self.paper_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.paper_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.paper_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        head = self.paper_table.horizontalHeader()
+        head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col, width in ((1, 80), (2, 80), (3, 100)):
+            head.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+            self.paper_table.setColumnWidth(col, width)
+        head.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         paper_layout.addWidget(self.paper_table)
         self._refresh_paper_table()
 
@@ -512,7 +534,8 @@ class SettingsTab(QWidget):
         rules_layout.addWidget(rules_header, 0, 0, 1, 4)
         rules_sub = QLabel("Each page has a minimum, added up across the document (e.g. 2 color at 5 + 1 B&W at 3 = 13). "
                            "If the total after all percentages is below that sum, it is topped up to it. Leave blank to turn off. "
-                           "If only B&W is set, it also applies to color pages.")
+                           "If only B&W is set, it also applies to color pages. "
+                           "A paper size can have its own min and max in the table above (Edit); these are used when it has none.")
         rules_sub.setWordWrap(True)
         rules_sub.setObjectName("muted")
         rules_layout.addWidget(rules_sub, 1, 0, 1, 4)
@@ -731,6 +754,7 @@ class SettingsTab(QWidget):
         self.paper_table.setRowCount(len(self.settings["paper_sizes"]))
         for i, p in enumerate(self.settings["paper_sizes"]):
             values = [p["name"], str(p["width_in"]), str(p["height_in"]), str(p["price"])]
+            values.append("/".join("–" if p.get(k) is None else f"{p[k]:g}" for k in ("min_bw", "min_color", "max")))
             for col, val in enumerate(values):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
