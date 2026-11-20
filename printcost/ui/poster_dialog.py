@@ -13,6 +13,7 @@ from printcost.core.analyzer import IMAGE_EXTS
 from printcost.ui.notes import label_style
 from printcost.ui.preview_widget import pil_to_qpixmap
 from printcost.ui.style import BORDER, PREVIEW_BG, ACCENT_LINE, PRIMARY, MAGENTA
+from printcost.ui.modal import ModalDialog
 
 PRESETS = [("2×2", (2, 2)), ("3×2", (3, 2)), ("3×3", (3, 3)), ("4×3", (4, 3)), ("Custom", None)]
 PRICING_MODES = [
@@ -202,7 +203,8 @@ class CropCanvas(QWidget):
         self.update()
 
 
-class CropDialog(QDialog):
+class CropDialog(ModalDialog):
+    movable = True
     """Drag the box over the part of the picture to keep."""
 
     def __init__(self, parent, pil_img, crop):
@@ -237,7 +239,8 @@ class CropDialog(QDialog):
         self.accept()
 
 
-class PosterDialog(QDialog):
+class PosterDialog(ModalDialog):
+    movable = True
     """Pick a picture, a grid and the options; builds the tiled PDF when you press Create poster."""
 
     def __init__(self, parent, path, settings, paper, job=None):

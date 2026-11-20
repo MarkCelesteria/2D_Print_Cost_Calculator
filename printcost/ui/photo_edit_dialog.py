@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 from printcost.core import matting, photofx
 from printcost.ui.style import BORDER, MAGENTA, PREVIEW_BG, PRIMARY
 from printcost.ui.download_dialog import DownloadDialog
+from printcost.ui.modal import ModalDialog
 
 LIGHT_SLIDERS = [("exposure", "Exposure"), ("shadows", "Shadows"), ("highlights", "Highlights"),
                  ("contrast", "Contrast"), ("warmth", "Warmth"), ("balance", "Left / right"), ("even", "Even out")]
@@ -273,7 +274,9 @@ class PhotoCanvas(QWidget):
         self.update()
 
 
-class PhotoEditDialog(QDialog):
+class PhotoEditDialog(ModalDialog):
+    movable = True
+    fill = True
     def __init__(self, parent, pil_img, state=None, box=None, max_px=photofx.MAX_EXPORT_PX):
         """box = (x0, y0, x1, y1) in pil_img pixels: only this part (the head crop) is edited and returned,
         so the lighting and cutout are judged on the person, not on the whole picture.
@@ -331,9 +334,7 @@ class PhotoEditDialog(QDialog):
         QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), self).activated.connect(self._undo_stroke)
         self._sync_controls()
         self._render()
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
         self.resize(1040, 740)
-        self.setWindowState(Qt.WindowState.WindowMaximized)
 
     def _restore_state(self, state):
         if not state:

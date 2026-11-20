@@ -24,6 +24,7 @@ from printcost.ui.photo_edit_dialog import FitWidthScroll, PhotoEditDialog
 from printcost.ui.notes import label_style
 from printcost.ui.preview_widget import pil_to_qpixmap
 from printcost.ui.style import BORDER, MUTED, PREVIEW_BG, MAGENTA
+from printcost.ui.modal import ModalDialog
 
 PRICING_MODES = [
     ("Calculated (ink + paper per sheet)", "calculated"),
@@ -353,7 +354,8 @@ class PositionCanvas(QWidget):
         self.set_zoom(min(1.0, max(0.1, self.focus[2] + step)))
 
 
-class PositionDialog(QDialog):
+class PositionDialog(ModalDialog):
+    movable = True
     def __init__(self, parent, pil_img, aspect, focus):
         super().__init__(parent)
         self.setWindowTitle("Position the face")
@@ -537,7 +539,8 @@ class EntryRow(QFrame):
 
 # ---------------- the dialog ----------------
 
-class IdPhotoDialog(QDialog):
+class IdPhotoDialog(ModalDialog):
+    movable = True
     """Pick a photo, say which sizes and how many; builds sheets that print at the real size."""
 
     def __init__(self, parent, path, settings, paper, job=None):

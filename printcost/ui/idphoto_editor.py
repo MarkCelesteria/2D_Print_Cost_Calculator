@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 from printcost.core import idphoto
 from printcost.ui.preview_widget import pil_to_qpixmap
 from printcost.ui.style import BORDER, MAGENTA, PREVIEW_BG
+from printcost.ui.modal import ModalDialog
 
 SNAP_PX = 9        # how close (on screen) a photo has to be to a neighbour before it snaps
 CELL_PPI = 120     # resolution of the little pictures drawn on the canvas
@@ -269,7 +270,8 @@ class LayoutCanvas(QWidget):
             super().keyPressEvent(event)
 
 
-class LayoutEditorDialog(QDialog):
+class LayoutEditorDialog(ModalDialog):
+    movable = True
     """Arrange the photos by hand. `result_layout` = (landscape, sheets) after OK."""
 
     def __init__(self, parent, img, spec, landscape, sheets, sig=None):

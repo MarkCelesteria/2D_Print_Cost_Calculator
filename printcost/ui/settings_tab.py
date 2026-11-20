@@ -13,6 +13,7 @@ from printcost.core import updater
 from printcost.ui.style import PRIMARY, TEXT, CARD_BG, BORDER, YELLOW, YELLOW_DARK, CmykBar
 from printcost.ui.help import with_help
 from printcost.ui.notes import notice
+from printcost.ui.modal import ModalDialog
 
 QUALITY_LABELS = [("draft", "Draft"), ("standard", "Standard"), ("high", "High")]
 
@@ -122,7 +123,8 @@ def _opt_str(v):
     return "" if v is None else str(v)
 
 
-class PaperSizeDialog(QDialog):
+class PaperSizeDialog(ModalDialog):
+    dismiss_outside = True
     def __init__(self, parent=None, existing=None):
         super().__init__(parent)
         self.setWindowTitle("Paper Size")
@@ -172,7 +174,8 @@ class PaperSizeDialog(QDialog):
             QMessageBox.critical(self, "Invalid input", "Please fill all fields correctly.")
 
 
-class DiscountDialog(QDialog):
+class DiscountDialog(ModalDialog):
+    dismiss_outside = True
     def __init__(self, parent=None, existing=None):
         super().__init__(parent)
         self.setWindowTitle("Discount")
@@ -204,7 +207,8 @@ class DiscountDialog(QDialog):
             QMessageBox.critical(self, "Invalid input", "Enter a name and a percentage between 0 and 100.")
 
 
-class BulkDialog(QDialog):
+class BulkDialog(ModalDialog):
+    dismiss_outside = True
     def __init__(self, parent=None, existing=None):
         super().__init__(parent)
         self.setWindowTitle("Bulk discount")
@@ -236,7 +240,8 @@ class BulkDialog(QDialog):
             QMessageBox.critical(self, "Invalid input", "Check the page range and a percentage between 0 and 100.")
 
 
-class PermitRulesDialog(QDialog):
+class PermitRulesDialog(ModalDialog):
+    dismiss_outside = True
     RULES = (
         "Read before turning this on:\n\n"
         "1. Only turn this on if your business has a valid business permit (Mayor's permit) "
@@ -294,7 +299,8 @@ class PermitRulesDialog(QDialog):
             self._flash.start()
 
 
-class PaperTypeDialog(QDialog):
+class PaperTypeDialog(ModalDialog):
+    dismiss_outside = True
     def __init__(self, parent=None, existing=None):
         super().__init__(parent)
         self.setWindowTitle("Paper type")

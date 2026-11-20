@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
 )
 
 from printcost.core.analyzer import format_page_ranges
+from printcost.ui.modal import ModalDialog
 
 W, M = 288, 20
 INK = (0, 0, 0)
@@ -224,7 +225,8 @@ def build_receipt_pdf(d):
     return data
 
 
-class ReceiptDialog(QDialog):
+class ReceiptDialog(ModalDialog):
+    dismiss_outside = True
     def __init__(self, data, parent=None):
         super().__init__(parent)
         data.setdefault("when", datetime.datetime.now())

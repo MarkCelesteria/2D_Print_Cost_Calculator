@@ -11,6 +11,8 @@ from PyQt6.QtCore import Qt, QTimer, QUrl, QRectF
 
 from printcost.ui.style import QSS, TEXT, MUTED, BORDER, CMYK_COLORS, CmykBar
 from printcost.ui.download_dialog import DownloadDialog
+from printcost.ui import popups
+popups.install()
 
 
 def make_app_icon():
