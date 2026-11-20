@@ -1,6 +1,8 @@
 from PyQt6 import QtWidgets
+import math
+
 from PyQt6.QtCore import Qt, QRectF
-from PyQt6.QtGui import QColor, QFont, QPainter
+from PyQt6.QtGui import QColor, QFont, QPainter, QTextDocument
 from PyQt6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QListWidget, QPlainTextEdit, QPushButton,
                              QVBoxLayout, QWidget)
 
@@ -14,11 +16,24 @@ WIDTH = 400
 _CUSTOM = 0x10000000
 
 
-def _fit(dialog, layout, width):
-    h = layout.heightForWidth(width)
-    if h < 0:
-        h = layout.sizeHint().height()
-    dialog.resize(width, max(h, layout.minimumSize().height()) + 6)
+def _label(text, width, fmt=Qt.TextFormat.AutoText, name=None):
+    """A wrapped label with an exact size. QLabel's own height guess for wrapped rich text can come out a line
+    short on some fonts/scales, which cuts the last line, so measure the text ourselves and add a little room."""
+    lab = QLabel(text)
+    lab.setTextFormat(fmt)
+    lab.setWordWrap(True)
+    if name:
+        lab.setObjectName(name)
+    lab.ensurePolished()
+    doc = QTextDocument()
+    doc.setDefaultFont(lab.font())
+    doc.setDocumentMargin(0)
+    rich = fmt == Qt.TextFormat.RichText or (fmt == Qt.TextFormat.AutoText and Qt.mightBeRichText(text))
+    doc.setHtml(text) if rich else doc.setPlainText(text)
+    doc.setTextWidth(width)
+    height = max(math.ceil(doc.size().height()), lab.heightForWidth(width))
+    lab.setFixedSize(width, height + lab.fontMetrics().height() // 2 + 2)
+    return lab
 
 
 def _button(text, primary=False):
@@ -56,7 +71,7 @@ class _Badge(QWidget):
 
 class MessageBox(ModalDialog):
     """Drop-in for the parts of QMessageBox this app uses."""
-    dismiss_outside = True  # a tap outside = Esc: it picks the Cancel/No/escape button, never a "yes"
+    dismiss_outside = True
     _native = _Native
     Icon = _Native.Icon
     StandardButton = _Native.StandardButton
@@ -79,7 +94,7 @@ class MessageBox(ModalDialog):
         super().__init__(parent)
         self._icon, self._text, self._info, self._detail = icon, text, "", ""
         self._fmt = Qt.TextFormat.AutoText
-        self._std, self._extra = {}, []  # standard buttons by id; custom buttons in the order they were added
+        self._std, self._extra = {}, []
         self._default = self._escape = self._clicked = None
         self.setWindowTitle(title)
         if buttons:
@@ -119,7 +134,7 @@ class MessageBox(ModalDialog):
         self._clicked = b
         self.done(1)
 
-    def reject(self):  # Esc or a tap outside
+    def reject(self):
         b = self._escape
         if b is None:
             b = next((self._std[s] for s in self._CANCEL_LIKE if s in self._std), None)
@@ -145,16 +160,12 @@ class MessageBox(ModalDialog):
             top.addWidget(_Badge(self._icon), 0, Qt.AlignmentFlag.AlignTop)
         col = QVBoxLayout()
         col.setSpacing(6)
-        text = QLabel(self._text)
-        text.setTextFormat(self._fmt)
-        text.setWordWrap(True)
+        text_w = WIDTH - 40 - (54 if self._icon in _Badge.GLYPHS else 0)
+        text = _label(self._text, text_w, self._fmt)
         text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         col.addWidget(text)
         if self._info:
-            info = QLabel(self._info)
-            info.setObjectName("muted")
-            info.setWordWrap(True)
-            col.addWidget(info)
+            col.addWidget(_label(self._info, text_w, name="muted"))
         top.addLayout(col, 1)
         root.addLayout(top)
         if self._detail:
@@ -171,7 +182,7 @@ class MessageBox(ModalDialog):
             row.addWidget(b)
         root.addLayout(row)
         self._default_button = default
-        _fit(self, root, WIDTH)
+        self.fit_width = WIDTH
 
     def exec(self):
         self._build()
@@ -212,9 +223,7 @@ class _Pick(ModalDialog):
         lay.setContentsMargins(20, 6, 20, 18)
         lay.setSpacing(12)
         if label:
-            text = QLabel(label)
-            text.setWordWrap(True)
-            lay.addWidget(text)
+            lay.addWidget(_label(label, 380 - 40))
         self.list = QListWidget()
         self.list.addItems(items)
         self.list.setCurrentRow(max(0, min(current, len(items) - 1)))
@@ -235,7 +244,7 @@ class _Pick(ModalDialog):
         row.addWidget(cancel)
         row.addWidget(ok)
         lay.addLayout(row)
-        _fit(self, lay, 380)
+        self.fit_width = 380
         self.list.setFocus()
 
 
@@ -257,9 +266,7 @@ class _Ask(ModalDialog):
         lay.setContentsMargins(20, 6, 20, 18)
         lay.setSpacing(12)
         if label:
-            q = QLabel(label)
-            q.setWordWrap(True)
-            lay.addWidget(q)
+            lay.addWidget(_label(label, 360 - 40))
         self.edit = QLineEdit(text)
         self.edit.setEchoMode(echo)
         self.edit.returnPressed.connect(self.accept)
@@ -272,7 +279,7 @@ class _Ask(ModalDialog):
         row.addWidget(cancel)
         row.addWidget(ok)
         lay.addLayout(row)
-        _fit(self, lay, 360)
+        self.fit_width = 360
         self.edit.setFocus()
         self.edit.selectAll()
 

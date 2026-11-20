@@ -1,6 +1,6 @@
 from PyQt6.QtCore import Qt, QEventLoop, QPoint, QRectF, QSize
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QRegion
-from PyQt6.QtWidgets import QApplication, QDialog, QFrame, QLabel, QVBoxLayout
+from PyQt6.QtWidgets import QApplication, QDialog, QFrame, QLabel, QVBoxLayout, QWidget
 
 from printcost.ui.style import BG, BORDER
 
@@ -72,7 +72,7 @@ class _Host(QDialog):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.fillRect(self.rect(), QColor(15, 27, 45, 120))
-        if self.card is not None:  # cheap soft shadow
+        if self.card is not None:
             r = self.card.geometry()
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(0, 0, 0, 8))
@@ -93,6 +93,7 @@ class ModalDialog(QDialog):
     dismiss_outside = False
     fill = False
     show_title = True
+    fit_width = 0
     _loop = None
 
     def exec(self):
@@ -103,6 +104,15 @@ class ModalDialog(QDialog):
         screen = (owner.screen() if owner is not None else QApplication.primaryScreen()).availableGeometry()
         window_ok = owner is not None and owner.isVisible() and not owner.isMinimized() and not self.fill
         area = owner.geometry() if window_ok else screen
+
+        if self.fit_width:
+            self.ensurePolished()
+            for child in self.findChildren(QWidget):
+                child.ensurePolished()
+            if self.layout() is not None:
+                self.layout().activate()
+            h = self.heightForWidth(self.fit_width)
+            self.resize(self.fit_width, (h if h > 0 else self.sizeHint().height()) + 4)
 
         title_h = TITLE_H if self.show_title else 0
         chrome = QSize(2, title_h + 2)
@@ -148,7 +158,8 @@ class ModalDialog(QDialog):
         host.hide()
         self.hide()
         lay.removeWidget(self)
-        self.setParent(orig_parent, orig_flags)
+        self.setParent(orig_parent, Qt.WindowType.Widget) if orig_parent is not None \
+            else self.setParent(None, orig_flags)
         host.deleteLater()
         self._modal_host = None
         self._loop = None

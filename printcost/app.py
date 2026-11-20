@@ -12,6 +12,7 @@ from PyQt6.QtCore import Qt, QTimer, QUrl, QRectF
 from printcost.ui.style import QSS, TEXT, MUTED, BORDER, CMYK_COLORS, CmykBar
 from printcost.ui.download_dialog import DownloadDialog
 from printcost.ui import popups
+
 popups.install()
 
 
@@ -143,11 +144,11 @@ class MainWindow(QMainWindow):
         self._download_worker = None
         self._progress = None
         updater.cleanup_leftovers()
-        self.calc_tab.on_calculated = self._maybe_show_update  # offer the update after a calculation finishes
+        self.calc_tab.on_calculated = self._maybe_show_update
         QTimer.singleShot(4000, self._start_update_check)
         self._update_timer = QTimer(self)
         self._update_timer.timeout.connect(self._start_update_check)
-        self._update_timer.start(24 * 60 * 60 * 1000)  # the app lives in the tray, so re-check daily
+        self._update_timer.start(24 * 60 * 60 * 1000)
 
     def _start_update_check(self, manual=False):
         if self._check_worker is not None and self._check_worker.isRunning():
