@@ -513,52 +513,8 @@ def cleanup_old_temp_dirs(max_age_hours: float = 24):
 
 # ---------------- page selection ----------------
 
-import re
-
-
-def parse_page_ranges(text, page_count):
-    """'1-6, 8-9, 11, 12' -> [1, 2, 3, 4, 5, 6, 8, 9, 11, 12]. Blank -> None (all pages)."""
-    text = (text or "").strip()
-    if not text:
-        return None
-    hint = f"Use page numbers like 1-6, 8-9, 11, 12 (this file has {page_count} page(s))."
-    text = text.replace("–", "-").replace("—", "-")
-    text = re.sub(r"\s*-\s*", "-", text)
-    pages = set()
-    for part in re.split(r"[,;\s]+", text):
-        if not part:
-            continue
-        try:
-            if "-" in part:
-                a, b = part.split("-", 1)
-                start, end = int(a), int(b)
-            else:
-                start = end = int(part)
-        except ValueError:
-            raise ValueError(f'Can\'t read "{part}". {hint}')
-        if start > end:
-            raise ValueError(f'"{part}" goes backwards. {hint}')
-        if start < 1 or end > page_count:
-            raise ValueError(f'"{part}" is outside the document. {hint}')
-        pages.update(range(start, end + 1))
-    return sorted(pages) or None
-
-
-def format_page_ranges(pages):
-    """[1, 2, 3, 5, 7, 8] -> '1-3, 5, 7-8'."""
-    out, start, prev = [], None, None
-    for n in sorted(pages):
-        if start is None:
-            start = prev = n
-        elif n == prev + 1:
-            prev = n
-        else:
-            out.append(f"{start}-{prev}" if prev > start else str(start))
-            start = prev = n
-    if start is not None:
-        out.append(f"{start}-{prev}" if prev > start else str(start))
-    return ", ".join(out)
-
+from printcost.core.pages import (
+    parse_page_ranges, parse_page_plan, format_page_ranges, format_page_plan, group_copies, has_copies)
 
 # ---------------- paper size detection ----------------
 

@@ -5,9 +5,9 @@ dist/
 __pycache__/
 *.pyc
 
-settings.json
+/*.json
+/*.xml
 splash.png
-_backup_before_restructure.zip
 .venv/
 venv/
 

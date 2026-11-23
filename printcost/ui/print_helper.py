@@ -6,7 +6,7 @@ import fitz
 import numpy as np
 
 from printcost.core import layout as page_layout
-from printcost.core.analyzer import format_page_ranges
+from printcost.core.analyzer import format_page_ranges, format_page_plan, has_copies
 from printcost.ui.notes import notice
 
 PRINT_DPI = 300
@@ -107,8 +107,11 @@ def print_pdf(pdf_path, parent=None, paper=None, color_mode="color", quality="st
     if actual_size:
         notes.append(("warn", "These sheets print at 100% so the sizes stay exact. In Preferences, turn off Fit to page / Scale to fit."))
     if pages:
-        notes.append(("info", f"Only pages {format_page_ranges(pages)} print ({len(pages)}). "
-                              "The window will still say All pages. Ignore it."))
+        text = (f"Only pages {format_page_plan(pages)} print ({len(pages)} pages). "
+                "The window will still say All pages. Ignore it.")
+        if has_copies(pages):
+            text += " The copies are already counted, so keep the printer's own Copies at 1."
+        notes.append(("info", text))
     if notes:
         if notice(parent, "info", "Before you print", notes,
                   QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Ok:

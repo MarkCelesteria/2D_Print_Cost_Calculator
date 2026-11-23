@@ -1,5 +1,6 @@
 from PyQt6.QtCore import Qt, QPoint
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QVBoxLayout
+from printcost.ui.popups import _label
 
 
 class HelpPopup(QFrame):
@@ -8,10 +9,7 @@ class HelpPopup(QFrame):
         self.setObjectName("helpPopup")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
-        label = QLabel(text)
-        label.setWordWrap(True)
-        label.setFixedWidth(270)
-        layout.addWidget(label)
+        layout.addWidget(_label(text, 270))
 
 
 class HelpButton(QToolButton):

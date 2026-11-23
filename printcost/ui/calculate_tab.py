@@ -15,7 +15,8 @@ from printcost.ui.icons import make_icon
 from printcost.ui.preview_widget import PreviewWidget
 from printcost.core.worker import AnalyzeWorker, LoadDocumentWorker, LayoutWorker
 from printcost.core.analyzer import (render_pdf_page, apply_preview_mode, compute_cost, cleanup_temp_dirs,
-                      parse_page_ranges, format_page_ranges, get_document_page_size, closest_paper,
+                      parse_page_ranges, parse_page_plan, format_page_ranges, format_page_plan, group_copies, has_copies,
+                      get_document_page_size, closest_paper,
                       get_pdf_page_inches, fit_page_to_paper, SUPPORTED_EXTS, IMAGE_EXTS, is_image,
                       get_pdf_page_count)
 from printcost.ui.full_preview_dialog import FullPreviewDialog
@@ -34,6 +35,18 @@ from printcost.ui.drop_overlay import DropOverlay
 
 SEE_MORE = "See more sizes…"
 RECENT_SECONDS = 3 * 24 * 60 * 60
+PAGES_HELP = (
+    "Choose which pages to print and how many copies of each. Leave it empty to print every page once.\n\n"
+    "Pages: 1-3, 5 (pages 1 to 3 and page 5).\n"
+    "Copies: type the number after the pages, inside (), [] or {}.\n\n"
+    "1-2 [2], 3 (4), 4\n"
+    "= pages 1-2 twice, page 3 four times, page 4 once.\n\n"
+    "all (2), 3 (1)\n"
+    "= every page twice, but page 3 only once. \"all\" has the lowest priority, so the pages you list win.\n\n"
+    "Just (2) on its own is the same as all (2).\n\n"
+    "Every copy is counted in the price. Keep the printer's own Copies at 1."
+)
+
 INK_TINTS = ["#e0f4fb", "#fde4f2", "#fff7c9", "#e9edf2"]
 
 PCT_LABELS = [
@@ -356,10 +369,14 @@ class CalculateTab(QWidget):
         self.fit_combo.currentIndexChanged.connect(self._reload_layout)
         self.per_page_combo.currentIndexChanged.connect(self._reload_layout)
 
-        self.pages_label = QLabel("Print pages")
-        opts_layout.addWidget(self.pages_label, 4, 0)
+        self.pages_label = QLabel("Pages (copies)")
+        pages_row = QHBoxLayout()
+        pages_row.setSpacing(6)
+        pages_row.addWidget(self.pages_label)
+        pages_row.addWidget(HelpButton(PAGES_HELP))
+        opts_layout.addLayout(pages_row, 4, 0, Qt.AlignmentFlag.AlignLeft)
         self.pages_input = QLineEdit()
-        self.pages_input.setPlaceholderText("All pages (or e.g. 1-6, 8-9, 11, 12)")
+        self.pages_input.setPlaceholderText("All pages, or e.g. 1-2 (2), 4, 6-8 [3]")
         self.pages_input.textChanged.connect(self._on_pages_changed)
         opts_layout.addWidget(self.pages_input, 4, 1, 1, 5)
 
@@ -730,7 +747,7 @@ class CalculateTab(QWidget):
         """Gray out the boxes that can't change anything for the current file."""
         loaded = bool(self.sources) and not self.poster_job
         images = sum(1 for p in self.sources if is_image(p))
-        pages_on = self.resolved_pdf_path is not None and self.page_count > 1 and self.layout_mode == "normal"
+        pages_on = self.resolved_pdf_path is not None and self.layout_mode == "normal"
         can_layout = not self.poster_job and (not self.sources or getattr(self, "_layout_base", None) is not None)
         for box, label, on, tip in (
             (self.layout_combo, self.layout_label, can_layout,
@@ -740,7 +757,7 @@ class CalculateTab(QWidget):
             (self.per_page_combo, self.per_page_label, loaded and images > 1,
              "Only used when you add more than one picture."),
             (self.pages_input, self.pages_label, pages_on,
-             "Only used when the document has more than one page."),
+             "Only used for normal printing, not Back-to-back or Booklet."),
         ):
             box.setEnabled(on)
             label.setEnabled(on)
@@ -770,6 +787,15 @@ class CalculateTab(QWidget):
         except ValueError:
             return None
 
+    def _selected_plan(self):
+        """Every page to print in print order, repeated once per copy. None for all pages, one copy each."""
+        if not self.resolved_pdf_path:
+            return None
+        try:
+            return parse_page_plan(self.pages_input.text(), self.page_count)
+        except ValueError:
+            return None
+
     def _included_indexes(self):
         sel = self._selected_pages()
         return [n - 1 for n in sel] if sel else list(range(self.page_count))
@@ -785,11 +811,14 @@ class CalculateTab(QWidget):
             self.pages_caption.setText("")
             return
         try:
-            pages = parse_page_ranges(text, self.page_count)
+            pages = parse_page_plan(text, self.page_count) or list(range(1, self.page_count + 1))
         except ValueError:
             self.pages_caption.setText("Can't read the page list")
             return
-        self.pages_caption.setText(f"Printing pages {format_page_ranges(pages)} ({len(pages)} of {self.page_count})")
+        if has_copies(pages):
+            self.pages_caption.setText(f"Printing {format_page_plan(pages)} ({len(pages)} pages in total)")
+        else:
+            self.pages_caption.setText(f"Printing pages {format_page_ranges(pages)} ({len(pages)} of {self.page_count})")
 
     def _on_pages_changed(self):
         if not self.resolved_pdf_path:
@@ -1265,7 +1294,7 @@ class CalculateTab(QWidget):
 
         try:
             page_text = self.pages_input.text() if self.resolved_pdf_path else ""
-            selected_pages = parse_page_ranges(page_text, self.page_count)
+            selected_pages = parse_page_plan(page_text, self.page_count)
         except ValueError as e:
             QMessageBox.critical(self, "Invalid pages", str(e))
             return
@@ -1415,7 +1444,7 @@ class CalculateTab(QWidget):
         header_row.addWidget(header_total)
         summary_layout.addLayout(header_row)
         shown = [p["page"] for p in result["per_page"]]
-        prefix = "" if len(shown) == self.page_count else f"Pages {format_page_ranges(shown)} · "
+        prefix = "" if len(shown) == self.page_count == len(set(shown)) else f"Pages {format_page_plan(shown)} · "
         counts = QLabel(prefix + f"{result['color_pages']} color, {result['num_pages'] - result['color_pages']} black & white")
         counts.setWordWrap(True)
         counts.setObjectName("muted")
@@ -1514,16 +1543,17 @@ class CalculateTab(QWidget):
         note2.setWordWrap(True)
         table_layout.addWidget(note2)
 
-        table = QTableWidget(len(result["per_page"]), 7)
+        grouped = group_copies(result["per_page"])
+        table = QTableWidget(len(grouped), 7)
         table.setHorizontalHeaderLabels(["Page", "Cyan %", "Magenta %", "Yellow %", "Black %", "Ink cost", "Price"])
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
-        for i, p in enumerate(result["per_page"]):
+        for i, p in enumerate(grouped):
             cov = p["coverage"]
             values = [
-                str(p["page"]),
+                f"{p['page']} x{p['copies']}" if p["copies"] > 1 else str(p["page"]),
                 f"{cov['C']*100:.1f}%",
                 f"{cov['M']*100:.1f}%",
                 f"{cov['Y']*100:.1f}%",
@@ -1607,7 +1637,7 @@ class CalculateTab(QWidget):
         if not self.resolved_pdf_path:
             notice(self, "warn", "Can't print", "No PDF to print. Install LibreOffice for .docx.")
             return
-        if self._selected_pages() != getattr(self, "print_pages", None):
+        if self._selected_plan() != getattr(self, "print_pages", None):
             notice(self, "warn", "Pages changed", "Pages changed. Press Calculate again, then print.")
             return
         names = [os.path.basename(p) for p in self.sources]

@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QLineEdit,
 )
 
-from printcost.core.analyzer import format_page_ranges
+from printcost.core.analyzer import format_page_ranges, format_page_plan, group_copies, has_copies
 from printcost.ui.modal import ModalDialog
 
 W, M = 288, 20
@@ -129,8 +129,11 @@ def _draw(page, d):
         row("Layout", lay["name"])
         row("Sheets", f"{lay['sheets']} ({lay['pages']} pages)")
     else:
-        row("Pages", f"{format_page_ranges(pages)} ({len(pages)} of {d['page_count']})" if pages
-            else f"All ({r['num_pages']})")
+        if has_copies(pages):
+            wrap_row("Pages", f"{format_page_plan(pages)} ({len(pages)} printed)")
+        else:
+            row("Pages", f"{format_page_ranges(pages)} ({len(pages)} of {d['page_count']})" if pages
+                else f"All ({r['num_pages']})")
     row("Color / B&W", f"{r['color_pages']} / {r['num_pages'] - r['color_pages']}")
     rule()
 
@@ -154,12 +157,13 @@ def _draw(page, d):
             label = _fit(f"{i // 2 + 1} ({format_page_ranges(lay['sheet_pages'][i // 2])})", 8, 76)
             cells([label] + [f"{sum(p['coverage'][k] for p in group) * 100:.1f}" for k in "CMYK"]
                   + [f"{sum(p['page_cost'] for p in group):.2f}"])
-    elif len(per) <= DETAIL_MAX:
+    elif len(group_copies(per)) <= DETAIL_MAX:
         center("Color use per page (%)", 9, "hebo", gap=1.7)
         cells(["Page", "C", "M", "Y", "K", "Price"], "hebo", MUTED)
-        for p in per:
+        for p in group_copies(per):
             c = p["coverage"]
-            cells([str(p["page"])] + [f"{c[k] * 100:.1f}" for k in "CMYK"] + [f"{p['page_cost']:.2f}"])
+            label = f"{p['page']} x{p['copies']}" if p["copies"] > 1 else str(p["page"])
+            cells([label] + [f"{c[k] * 100:.1f}" for k in "CMYK"] + [f"{p['page_cost']:.2f}"])
     else:
         center("Color use summary (average %)", 9, "hebo", gap=1.7)
         cells(["Type", "C", "M", "Y", "K", "Price"], "hebo", MUTED)
