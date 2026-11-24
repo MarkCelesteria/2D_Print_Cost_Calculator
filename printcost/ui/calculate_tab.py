@@ -97,6 +97,7 @@ class CalculateTab(QWidget):
         self.is_approx = False
 
         self.poster_job = None  # set while the loaded document is a tiled poster
+        self._scan_session = None
         self.pct_inputs = {}
         self.quality_inputs = {}
         self.manual_discount = None
@@ -1154,42 +1155,36 @@ class CalculateTab(QWidget):
             self._open_poster()
 
     def _open_scan(self):
-        paths = [p for p in self.sources if is_image(p)] if not self.poster_job else []
-        if not paths or len(paths) != len(self.sources):
-            exts = " ".join(f"*{e}" for e in IMAGE_EXTS)
-            paths, _ = QFileDialog.getOpenFileNames(self, "Choose photos to scan", "", f"Pictures ({exts})")
-            if not paths:
-                return
-        dialog = DocScanDialog(self, paths)
-        accepted = dialog.exec() == dialog.DialogCode.Accepted
-        path = dialog.result_path
-        dialog.deleteLater()
-        if accepted and path:
-            self.load_file(path)
-
-    def _open_scan(self):
         if not self.resolved_pdf_path:
             QMessageBox.information(self, "Nothing to scan", "Load a PDF or pictures first.")
             return
         if self.poster_job or self.layout_mode != "normal":
             QMessageBox.information(self, "Scan", "Set Print layout to Normal, and remove the poster or ID sheets, to scan.")
             return
-        untouched = self.resolved_pdf_path == self.original_pdf_path
-        if untouched and self.sources and all(is_image(p) for p in self.sources) \
-                and self.per_page_combo.currentText() == "1":
-            items = list(self.sources)
-        else:
-            items = [("pdf", self.resolved_pdf_path, i) for i in self._included_indexes()]
-        if len(items) > 60:
-            QMessageBox.information(self, "Too many pages",
-                                    "Scan works on up to 60 pages at a time. Pick pages in \"Print pages\" first.")
-            return
-        dialog = DocScanDialog(self, items, self._current_paper())
+        session = self._scan_session
+        if session and (session["pdf"] != self.resolved_pdf_path or not all(
+                os.path.exists(p["item"][1] if isinstance(p["item"], tuple) else p["item"])
+                for p in session["state"]["pages"])):
+            session = None
+        items = None
+        if not session:
+            untouched = self.resolved_pdf_path == self.original_pdf_path
+            if untouched and self.sources and all(is_image(p) for p in self.sources) \
+                    and self.per_page_combo.currentText() == "1":
+                items = list(self.sources)
+            else:
+                items = [("pdf", self.resolved_pdf_path, i) for i in self._included_indexes()]
+            if len(items) > 60:
+                QMessageBox.information(self, "Too many pages",
+                                        "Scan works on up to 60 pages at a time. Pick pages in \"Print pages\" first.")
+                return
+        dialog = DocScanDialog(self, items, self._current_paper(), session=session["state"] if session else None)
         accepted = dialog.exec() == dialog.DialogCode.Accepted
-        path, count = dialog.result_path, len(dialog.pages)
+        path, count, state = dialog.result_path, len(dialog.pages), dialog.result_state
         dialog.deleteLater()
         if accepted and path:
             self._adopt_edited_pdf(path, count, None)
+            self._scan_session = {"pdf": self.resolved_pdf_path, "state": state}
             self._add_badge("Scanned")
             self.status_label.setText("Scan applied. Press Calculate to update the price.")
 

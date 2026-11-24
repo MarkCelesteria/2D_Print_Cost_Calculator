@@ -1,4 +1,5 @@
 import os
+import shutil
 
 from PyQt6.QtCore import Qt, QPointF, QRectF, QSize, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPolygonF
@@ -27,7 +28,8 @@ MODE_CSS = (f"QPushButton {{ padding: 6px 16px; border: 1px solid {BORDER}; back
 
 
 class ScanPage:
-    def __init__(self, name, src, corners, found, filter_name):
+    def __init__(self, item, name, src, corners, found, filter_name):
+        self.item = item
         self.name = name
         self.src = src
         self.prev = docscan.preview_source(src)
@@ -37,6 +39,7 @@ class ScanPage:
         self.filter = filter_name
         self.brightness = 0
         self.contrast = 0
+        self.strength = 50
         self.prev_pix = pil_to_qpixmap(self.prev)
         self.result_pix = None
 
@@ -45,9 +48,9 @@ class _LoadWorker(QThread):
     page_ready = pyqtSignal(object)
     page_failed = pyqtSignal(str, str)
 
-    def __init__(self, items, filter_name):
+    def __init__(self, jobs, filter_name):
         super().__init__()
-        self._items = items
+        self._jobs = jobs
         self._filter = filter_name
         self._stop = False
 
@@ -55,7 +58,7 @@ class _LoadWorker(QThread):
         self._stop = True
 
     def run(self):
-        for item in self._items:
+        for item, saved in self._jobs:
             if self._stop:
                 return
             name = f"Page {item[2] + 1}" if isinstance(item, tuple) else os.path.basename(item)
@@ -65,9 +68,14 @@ class _LoadWorker(QThread):
                     corners, found, filter_name = docscan.default_corners(0.0), True, "original"
                 else:
                     src = docscan.load_image(item)
-                    corners, found = docscan.detect_corners(docscan.preview_source(src))
+                    if saved:
+                        corners, found = saved["corners"], saved["found"]
+                    else:
+                        corners, found = docscan.detect_corners(docscan.preview_source(src))
                     filter_name = self._filter
-                self.page_ready.emit(("page", name, src, corners, found, filter_name))
+                if isinstance(item, tuple) and saved:
+                    corners, found = saved["corners"], saved["found"]
+                self.page_ready.emit(("page", item, name, src, corners, found, filter_name, saved))
             except Exception as e:
                 self.page_failed.emit(name, str(e))
 
@@ -90,10 +98,10 @@ class _ExportWorker(QThread):
     def run(self):
         try:
             pages = []
-            for n, (src, corners, turns, name, brightness, contrast) in enumerate(self._jobs):
+            for n, (src, corners, turns, name, brightness, contrast, strength) in enumerate(self._jobs):
                 if self._stop:
                     return
-                pages.append((docscan.process(src, corners, turns, name, brightness, contrast), name))
+                pages.append((docscan.process(src, corners, turns, name, brightness, contrast, strength), name))
                 self.progress.emit(n + 1)
             os.makedirs(os.path.dirname(self._dest), exist_ok=True)
             docscan.build_pdf(pages, self._dest, self._page_size)
@@ -231,11 +239,13 @@ class CornerCanvas(QWidget):
 class DocScanDialog(ModalDialog):
     fill = True
 
-    def __init__(self, parent, items, paper=None):
+    def __init__(self, parent, items, paper=None, session=None):
         super().__init__(parent)
         self.setWindowTitle("Scan documents")
         self._paper = paper
         self.result_path = None
+        self.result_state = None
+        self._state = None
         self.pages = []
         self._workers = []
         self._exporter = None
@@ -246,7 +256,17 @@ class DocScanDialog(ModalDialog):
         self._timer.setSingleShot(True)
         self._timer.setInterval(90)
         self._timer.timeout.connect(self._refresh)
-        self.add_items(items)
+        if session:
+            self._pick_size(session["page_size"])
+            self.add_items([st["item"] for st in session["pages"]], session["pages"])
+        else:
+            self.add_items(items)
+
+    def _pick_size(self, value):
+        for i in range(self.size_combo.count()):
+            if self.size_combo.itemData(i) == value:
+                self.size_combo.setCurrentIndex(i)
+                return
 
     def _build(self):
         root = QHBoxLayout(self)
@@ -314,7 +334,10 @@ class DocScanDialog(ModalDialog):
             right.addWidget(b)
         self.bright = self._slider("Brightness", right)
         self.contrast = self._slider("Contrast", right)
-        for s in (self.bright, self.contrast):
+        self.strength_slider = self._slider("Enhance strength", right, 0, 100, 50)
+        self.strength_slider.setToolTip("How much Enhance evens out the light and whitens the paper.\n"
+                                        "Lower it if the colors look too strong.")
+        for s in (self.bright, self.contrast, self.strength_slider):
             s.valueChanged.connect(self._adjust_changed)
         all_btn = QPushButton("Apply to all pages")
         all_btn.setObjectName("secondary")
@@ -348,11 +371,11 @@ class DocScanDialog(ModalDialog):
         root.addWidget(holder)
         self.filter_btns[self._filter].setChecked(True)
 
-    def _slider(self, text, layout):
+    def _slider(self, text, layout, low=-100, high=100, value=0):
         layout.addWidget(QLabel(text))
         s = QSlider(Qt.Orientation.Horizontal)
-        s.setRange(-100, 100)
-        s.setValue(0)
+        s.setRange(low, high)
+        s.setValue(value)
         layout.addWidget(s)
         return s
 
@@ -360,11 +383,13 @@ class DocScanDialog(ModalDialog):
         row = self.list.currentRow()
         return self.pages[row] if 0 <= row < len(self.pages) else None
 
-    def add_items(self, items):
-        items = [i for i in items if isinstance(i, tuple) or i.lower().endswith(IMAGE_EXTS)]
-        if not items:
+    def add_items(self, items, saved=None):
+        saved = saved or [None] * len(items)
+        jobs = [(i, st) for i, st in zip(items, saved) if isinstance(i, tuple) or i.lower().endswith(IMAGE_EXTS)]
+        if not jobs:
             return
-        worker = _LoadWorker(items, self._filter)
+        items = jobs
+        worker = _LoadWorker(jobs, self._filter)
         worker.page_ready.connect(self._page_ready)
         worker.page_failed.connect(self._page_failed)
         worker.finished.connect(self._loading_done)
@@ -373,8 +398,14 @@ class DocScanDialog(ModalDialog):
         worker.start()
 
     def _page_ready(self, data):
-        _, name, src, corners, found, filter_name = data
-        page = ScanPage(name, src, corners, found, filter_name)
+        _, item, name, src, corners, found, filter_name, saved = data
+        page = ScanPage(item, name, src, corners, found, filter_name)
+        if saved:
+            page.turns = saved["turns"]
+            page.filter = saved["filter"]
+            page.brightness = saved["brightness"]
+            page.contrast = saved["contrast"]
+            page.strength = saved["strength"]
         self.pages.append(page)
         item = QListWidgetItem(str(len(self.pages)))
         item.setToolTip(name)
@@ -393,7 +424,7 @@ class DocScanDialog(ModalDialog):
 
     def _thumb(self, row, page):
         out = docscan.process(page.prev, page.corners, page.turns, page.filter, page.brightness, page.contrast,
-                              max_side=240)
+                              page.strength, max_side=240)
         out.thumbnail((THUMB.width() * 2, THUMB.height() * 2))
         self.list.item(row).setIcon(QIcon(pil_to_qpixmap(out)))
 
@@ -431,13 +462,15 @@ class DocScanDialog(ModalDialog):
         page = self._page()
         if page is None:
             return
-        for w in (self.bright, self.contrast):
+        for w in (self.bright, self.contrast, self.strength_slider):
             w.blockSignals(True)
         self.bright.setValue(page.brightness)
         self.contrast.setValue(page.contrast)
-        for w in (self.bright, self.contrast):
+        self.strength_slider.setValue(page.strength)
+        for w in (self.bright, self.contrast, self.strength_slider):
             w.blockSignals(False)
         self.filter_btns[page.filter].setChecked(True)
+        self.strength_slider.setEnabled(page.filter == "enhance")
         self._refresh()
         self._update_status()
 
@@ -470,7 +503,7 @@ class DocScanDialog(ModalDialog):
         if page is None:
             return
         out = docscan.process(page.prev, page.corners, page.turns, page.filter, page.brightness, page.contrast,
-                              max_side=docscan.PREVIEW_MAX_SIDE)
+                              page.strength, max_side=docscan.PREVIEW_MAX_SIDE)
         page.result_pix = pil_to_qpixmap(out)
         small = out.copy()
         small.thumbnail((THUMB.width() * 2, THUMB.height() * 2))
@@ -516,6 +549,7 @@ class DocScanDialog(ModalDialog):
         if page is None:
             return
         page.filter = key
+        self.strength_slider.setEnabled(key == "enhance")
         self._timer.start()
 
     def _adjust_changed(self):
@@ -523,6 +557,7 @@ class DocScanDialog(ModalDialog):
         if page is None:
             return
         page.brightness, page.contrast = self.bright.value(), self.contrast.value()
+        page.strength = self.strength_slider.value()
         self._timer.start()
 
     def _apply_all(self):
@@ -531,6 +566,7 @@ class DocScanDialog(ModalDialog):
             return
         for other in self.pages:
             other.filter, other.brightness, other.contrast = page.filter, page.brightness, page.contrast
+            other.strength = page.strength
         for row, other in enumerate(self.pages):
             self._thumb(row, other)
         self.status.setText(f"Applied to all {len(self.pages)} page(s).")
@@ -542,20 +578,42 @@ class DocScanDialog(ModalDialog):
         if any(w.isRunning() for w in self._workers):
             QMessageBox.information(self, "Still loading", "Wait for the photos to finish loading.")
             return
-        jobs = [(p.src, p.corners, p.turns, p.filter, p.brightness, p.contrast) for p in self.pages]
+        jobs = [(p.src, p.corners, p.turns, p.filter, p.brightness, p.contrast, p.strength) for p in self.pages]
+        dest = docscan.new_scan_path()
+        self._state = self._snapshot(os.path.dirname(dest))
         self.progress.setRange(0, len(jobs))
         self.progress.setValue(0)
         self.progress.show()
         self.save_btn.setEnabled(False)
         self.status.setText("Saving…")
-        self._exporter = _ExportWorker(jobs, self.size_combo.currentData(), docscan.new_scan_path())
+        self._exporter = _ExportWorker(jobs, self.size_combo.currentData(), dest)
         self._exporter.progress.connect(self.progress.setValue)
         self._exporter.saved.connect(self._saved)
         self._exporter.failed.connect(self._save_failed)
         self._exporter.start()
 
+    def _snapshot(self, folder):
+        copies = {}
+        pages = []
+        for p in self.pages:
+            item = p.item
+            if isinstance(item, tuple):
+                if item[1] not in copies:
+                    target = os.path.join(folder, f"source_{len(copies) + 1}.pdf")
+                    try:
+                        shutil.copy2(item[1], target)
+                        copies[item[1]] = target
+                    except OSError:
+                        copies[item[1]] = item[1]
+                item = ("pdf", copies[item[1]], item[2])
+            pages.append({"item": item, "corners": [tuple(c) for c in p.corners], "found": p.found,
+                          "turns": p.turns, "filter": p.filter, "brightness": p.brightness,
+                          "contrast": p.contrast, "strength": p.strength})
+        return {"pages": pages, "page_size": self.size_combo.currentData()}
+
     def _saved(self, path):
         self.result_path = path
+        self.result_state = self._state
         self.accept()
 
     def _save_failed(self, msg):

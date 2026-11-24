@@ -16,6 +16,7 @@ EXPORT_MAX_SIDE = 2600
 PREVIEW_MAX_SIDE = 1100
 DETECT_SIDE = 256
 DEFAULT_INSET = 0.04
+EDGE_CONTRAST = 20.0
 
 FILTERS = [
     ("original", "Original"),
@@ -178,8 +179,9 @@ def _clean(mask):
     return np.asarray(img) > 127
 
 
-def _edge_support(gray, quad, reach=3.0):
-    h, w = gray.shape
+def _edge_support(rgb, quad, reach=3.0):
+    """Share of points along the quad's edges where the color changes across the edge (either direction)."""
+    h, w = rgb.shape[:2]
     cx = sum(p[0] for p in quad) / 4.0
     cy = sum(p[1] for p in quad) / 4.0
     hits, total = 0, 0
@@ -198,7 +200,7 @@ def _edge_support(gray, quad, reach=3.0):
             total += 1
             if not (0 <= ox < w and 0 <= oy < h and 0 <= ix < w and 0 <= iy < h):
                 continue
-            if float(gray[iy, ix]) - float(gray[oy, ox]) > 10.0:
+            if float(np.sqrt(((rgb[iy, ix] - rgb[oy, ox]) ** 2).sum())) > EDGE_CONTRAST:
                 hits += 1
     return hits / float(total)
 
@@ -209,7 +211,7 @@ def detect_corners(img):
     small = img.resize((max(8, round(img.width * scale)), max(8, round(img.height * scale))), Image.BILINEAR)
     small = small.filter(ImageFilter.GaussianBlur(1.2))
     h, w = small.height, small.width
-    gray = np.asarray(small.convert("L"), dtype=np.float32)
+    rgb = np.asarray(small, dtype=np.float32)
     best, best_score = None, 0.0
     for mask in _candidate_masks(small):
         idx = _largest_component(_clean(mask))
@@ -225,7 +227,7 @@ def detect_corners(img):
         frac = area / float(w * h)
         if not _convex(quad) or frac < 0.12 or frac > 0.985:
             continue
-        support = _edge_support(gray, quad)
+        support = _edge_support(rgb, quad)
         if support < 0.7:
             continue
         score = min(idx.size / area, area / idx.size) * (0.6 + 0.4 * min(1.0, frac / 0.5)) * support
@@ -335,6 +337,12 @@ def _flatten(img):
     return np.clip(arr / bg, 0.0, 1.6)
 
 
+def _flatten_lum(img):
+    """Remove uneven light using the brightness only, so colors keep their hue (no rainbow tints)."""
+    bg = np.maximum(_background(img.convert("L")), 24.0)
+    return np.clip(np.asarray(img, dtype=np.float32) / bg[:, :, None], 0.0, 1.6)
+
+
 def _stretch(arr, low=0.5, high=99.5):
     lo, hi = np.percentile(arr, [low, high])
     if hi - lo < 1e-3:
@@ -346,20 +354,23 @@ def _to_image(arr):
     return Image.fromarray((np.clip(arr, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
 
 
-def apply_filter(img, name, brightness=0, contrast=0):
-    """brightness / contrast: -100..100. Returns an RGB image ('L' converted back) the same size as `img`."""
+def apply_filter(img, name, brightness=0, contrast=0, strength=50):
+    """brightness / contrast: -100..100. strength: 0..100, how much Enhance changes the photo. Returns an RGB image ('L' converted back) the same size as `img`."""
     if name == "original":
         arr = np.asarray(img, dtype=np.float32) / 255.0
     elif name == "enhance":
-        flat = _flatten(img)
-        arr = np.clip(flat, 0.0, 1.0)
-        arr = _stretch(arr, 1.0, 99.0)
-        lum = arr.mean(axis=2, keepdims=True)
-        arr = lum + (arr - lum) * 1.25
-        arr = np.clip(arr, 0.0, 1.0) ** 1.08
+        orig = np.asarray(img, dtype=np.float32) / 255.0
+        flat = np.clip(_flatten_lum(img), 0.0, 1.0)
+        lo, hi = np.percentile(flat.mean(axis=2), [1.0, 99.0])
+        if hi - lo > 1e-3:
+            flat = np.clip((flat - lo) / (hi - lo), 0.0, 1.0)
+        k = min(1.0, max(0.0, strength / 100.0))
+        arr = orig * (1.0 - k) + flat * k
     elif name == "lighten":
-        arr = np.clip(_flatten(img), 0.0, 1.0)
-        arr = _stretch(arr, 1.0, 97.0)
+        arr = np.clip(_flatten_lum(img), 0.0, 1.0)
+        lo, hi = np.percentile(arr.mean(axis=2), [1.0, 97.0])
+        if hi - lo > 1e-3:
+            arr = (arr - lo) / (hi - lo)
         arr = np.clip(arr, 0.0, 1.0) ** 0.62
     elif name == "gray":
         lum = np.asarray(img.convert("L"), dtype=np.float32)
@@ -381,10 +392,11 @@ def apply_filter(img, name, brightness=0, contrast=0):
     return _to_image(arr)
 
 
-def process(src, corners, turns=0, filter_name="original", brightness=0, contrast=0, max_side=EXPORT_MAX_SIDE):
+def process(src, corners, turns=0, filter_name="original", brightness=0, contrast=0, strength=50,
+            max_side=EXPORT_MAX_SIDE):
     flat = warp(src, corners, max_side)
     flat = rotate(flat, turns)
-    return apply_filter(flat, filter_name, brightness, contrast)
+    return apply_filter(flat, filter_name, brightness, contrast, strength)
 
 
 def preview_source(img):
