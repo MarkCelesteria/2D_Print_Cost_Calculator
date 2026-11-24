@@ -27,6 +27,7 @@ from printcost.core import idphoto
 from printcost.core import layout as page_layout
 from printcost.ui.poster_dialog import PosterDialog
 from printcost.ui.idphoto_dialog import IdPhotoDialog
+from printcost.ui.docscan_dialog import DocScanDialog
 from printcost.ui.layout_preview_dialog import SheetsPreviewDialog, BookPreviewDialog
 from printcost.ui.help import HelpButton, with_help
 from printcost.ui.notes import label_style, notice
@@ -161,7 +162,17 @@ class CalculateTab(QWidget):
         self.full_preview_btn.setObjectName("secondary")
         self.full_preview_btn.clicked.connect(self._open_full_preview)
         self.full_preview_btn.setEnabled(False)
-        left_layout.addWidget(self.full_preview_btn)
+        self.scan_btn = QPushButton("Scan")
+        self.scan_btn.setObjectName("secondary")
+        self.scan_btn.setIcon(make_icon("scan"))
+        self.scan_btn.setIconSize(QSize(18, 18))
+        self.scan_btn.setToolTip("Straighten, crop and clean up the pages of this document.")
+        self.scan_btn.clicked.connect(self._open_scan)
+        self.scan_btn.setEnabled(False)
+        preview_row = QHBoxLayout()
+        preview_row.addWidget(self.full_preview_btn, 1)
+        preview_row.addWidget(self.scan_btn, 1)
+        left_layout.addLayout(preview_row)
 
         tools_row = QHBoxLayout()
         self.poster_btn = QPushButton("Poster")
@@ -462,6 +473,7 @@ class CalculateTab(QWidget):
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
         self.full_preview_btn.setEnabled(False)
+        self.scan_btn.setEnabled(False)
         self.status_label.setText("")
         self._clear_results()
 
@@ -694,6 +706,7 @@ class CalculateTab(QWidget):
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
         self.full_preview_btn.setEnabled(False)
+        self.scan_btn.setEnabled(False)
         self.resolved_pdf_path = None
         self.page_count = 1
         self.current_page = 0
@@ -736,6 +749,7 @@ class CalculateTab(QWidget):
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(can_navigate)
         self.full_preview_btn.setEnabled(pdf_path is not None)
+        self.scan_btn.setEnabled(pdf_path is not None)
         self._update_input_states()
         if pdf_path is not None and self.layout_mode != "normal" and not self.poster_job:
             self._apply_layout()
@@ -1138,6 +1152,46 @@ class CalculateTab(QWidget):
             self._open_id()
         else:
             self._open_poster()
+
+    def _open_scan(self):
+        paths = [p for p in self.sources if is_image(p)] if not self.poster_job else []
+        if not paths or len(paths) != len(self.sources):
+            exts = " ".join(f"*{e}" for e in IMAGE_EXTS)
+            paths, _ = QFileDialog.getOpenFileNames(self, "Choose photos to scan", "", f"Pictures ({exts})")
+            if not paths:
+                return
+        dialog = DocScanDialog(self, paths)
+        accepted = dialog.exec() == dialog.DialogCode.Accepted
+        path = dialog.result_path
+        dialog.deleteLater()
+        if accepted and path:
+            self.load_file(path)
+
+    def _open_scan(self):
+        if not self.resolved_pdf_path:
+            QMessageBox.information(self, "Nothing to scan", "Load a PDF or pictures first.")
+            return
+        if self.poster_job or self.layout_mode != "normal":
+            QMessageBox.information(self, "Scan", "Set Print layout to Normal, and remove the poster or ID sheets, to scan.")
+            return
+        untouched = self.resolved_pdf_path == self.original_pdf_path
+        if untouched and self.sources and all(is_image(p) for p in self.sources) \
+                and self.per_page_combo.currentText() == "1":
+            items = list(self.sources)
+        else:
+            items = [("pdf", self.resolved_pdf_path, i) for i in self._included_indexes()]
+        if len(items) > 60:
+            QMessageBox.information(self, "Too many pages",
+                                    "Scan works on up to 60 pages at a time. Pick pages in \"Print pages\" first.")
+            return
+        dialog = DocScanDialog(self, items, self._current_paper())
+        accepted = dialog.exec() == dialog.DialogCode.Accepted
+        path, count = dialog.result_path, len(dialog.pages)
+        dialog.deleteLater()
+        if accepted and path:
+            self._adopt_edited_pdf(path, count, None)
+            self._add_badge("Scanned")
+            self.status_label.setText("Scan applied. Press Calculate to update the price.")
 
     def _open_id(self):
         job = self.poster_job if self.poster_job and self.poster_job.get("kind") == "id" else None

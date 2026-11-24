@@ -201,10 +201,27 @@ def _close(p, c, white):
     p.drawLine(QPointF(48, 16), QPointF(16, 48))
 
 
+def _scan(p, c, white):
+    p.setPen(QPen(c, 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.SquareCap, Qt.PenJoinStyle.MiterJoin))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    for pts in (((7, 21), (7, 7), (21, 7)), ((43, 7), (57, 7), (57, 21)),
+                ((7, 43), (7, 57), (21, 57)), ((43, 57), (57, 57), (57, 43))):
+        p.drawPolyline(_poly(*pts))
+    _fill(p, c)
+    p.drawRoundedRect(QRectF(19, 16, 26, 32), 3, 3)
+    _fill(p, white)
+    p.drawRoundedRect(QRectF(24, 22, 16, 3.5), 1.7, 1.7)
+    p.drawRoundedRect(QRectF(24, 39, 12, 3.5), 1.7, 1.7)
+    p.setPen(QPen(c, 4, Qt.PenStyle.SolidLine, ROUND))
+    p.drawLine(QPointF(5, 32), QPointF(59, 32))
+    p.setPen(QPen(white, 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
+    p.drawLine(QPointF(19, 32), QPointF(45, 32))
+
+
 _DRAW = {"printer": _printer, "receipt": _receipt, "tag": _tag, "undo": _undo, "redo": _redo, "reset": _reset,
          "image-add": _image_add, "trash": _trash, "crop": _crop, "position": _position, "pages": _pages,
          "copy": _copy, "paste": _paste, "page-setup": _page_setup, "check": _check, "close": _close,
-         "poster": _poster, "id-photo": _id_photo}
+         "poster": _poster, "id-photo": _id_photo, "scan": _scan}
 
 
 def make_icon(name, color=PRIMARY_DARK, detail="white"):
