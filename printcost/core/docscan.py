@@ -415,21 +415,25 @@ def _encode(img, filter_name):
     return buf.getvalue()
 
 
-def build_pdf(pages, dest, page_size="auto", dpi=200):
-    """pages: [(PIL image, filter name)]. page_size: key of PAGE_SIZES, or a (width, height) in points. Returns dest."""
+def build_pdf(pages, dest, page_size="auto", dpi=200, margin_pt=0.0):
+    """pages: [(PIL image, filter name)]. page_size: key of PAGE_SIZES, or a (width, height) in points.
+    margin_pt: white border kept around every scan (the page grows by it when the size is "auto")."""
     if isinstance(page_size, (tuple, list)):
         paper = (min(page_size), max(page_size))
     else:
         paper = next((p[2] for p in PAGE_SIZES if p[0] == page_size), None)
+    margin_pt = max(0.0, float(margin_pt))
     doc = fitz.open()
     try:
         for img, filter_name in pages:
             if paper is None:
-                pw, ph = img.width * 72.0 / dpi, img.height * 72.0 / dpi
-                rect = fitz.Rect(0, 0, pw, ph)
+                iw, ih = img.width * 72.0 / dpi, img.height * 72.0 / dpi
+                pw, ph = iw + 2 * margin_pt, ih + 2 * margin_pt
+                rect = fitz.Rect(margin_pt, margin_pt, margin_pt + iw, margin_pt + ih)
             else:
                 pw, ph = paper if img.width <= img.height else (paper[1], paper[0])
-                k = min(pw / img.width, ph / img.height)
+                m = min(margin_pt, min(pw, ph) / 2.0 - 20.0)
+                k = min((pw - 2 * m) / img.width, (ph - 2 * m) / img.height)
                 iw, ih = img.width * k, img.height * k
                 rect = fitz.Rect((pw - iw) / 2, (ph - ih) / 2, (pw + iw) / 2, (ph + ih) / 2)
             page = doc.new_page(width=pw, height=ph)

@@ -4,7 +4,7 @@ import shutil
 from PyQt6.QtCore import Qt, QPointF, QRectF, QSize, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPolygonF
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QComboBox, QFileDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QAbstractItemView, QButtonGroup, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QMessageBox, QProgressBar, QPushButton, QSlider, QVBoxLayout, QWidget,
 )
 
@@ -23,8 +23,17 @@ PICK_FILTER = "Pictures (" + " ".join(f"*{e}" for e in IMAGE_EXTS) + ")"
 FILTER_CSS = (f"QPushButton {{ text-align: left; padding: 8px 12px; border: 1px solid {BORDER}; "
               f"border-radius: 8px; background: white; }} "
               f"QPushButton:checked {{ border: 2px solid {MAGENTA}; font-weight: 700; }}")
-MODE_CSS = (f"QPushButton {{ padding: 6px 16px; border: 1px solid {BORDER}; background: white; }} "
-            f"QPushButton:checked {{ background: {MAGENTA}; color: white; border-color: {MAGENTA}; }}")
+
+
+def _mode_css(left):
+    radius = ("border-top-left-radius: 10px; border-bottom-left-radius: 10px; "
+              "border-top-right-radius: 0px; border-bottom-right-radius: 0px;") if left else (
+              "border-top-right-radius: 10px; border-bottom-right-radius: 10px; "
+              "border-top-left-radius: 0px; border-bottom-left-radius: 0px;")
+    return (f"QPushButton {{ padding: 0px 40px; min-height: 42px; font-size: 15px; font-weight: 700; "
+            f"border: 2px solid {MAGENTA}; background: white; color: {MAGENTA}; {radius} }} "
+            f"QPushButton:hover:!checked {{ background: #fde4f2; }} "
+            f"QPushButton:checked {{ background: {MAGENTA}; color: white; }}")
 
 
 class ScanPage:
@@ -85,11 +94,12 @@ class _ExportWorker(QThread):
     saved = pyqtSignal(str)
     failed = pyqtSignal(str)
 
-    def __init__(self, jobs, page_size, dest):
+    def __init__(self, jobs, page_size, dest, margin_pt=0.0):
         super().__init__()
         self._jobs = jobs
         self._page_size = page_size
         self._dest = dest
+        self._margin = margin_pt
         self._stop = False
 
     def stop(self):
@@ -104,7 +114,7 @@ class _ExportWorker(QThread):
                 pages.append((docscan.process(src, corners, turns, name, brightness, contrast, strength), name))
                 self.progress.emit(n + 1)
             os.makedirs(os.path.dirname(self._dest), exist_ok=True)
-            docscan.build_pdf(pages, self._dest, self._page_size)
+            docscan.build_pdf(pages, self._dest, self._page_size, margin_pt=self._margin)
             self.saved.emit(self._dest)
         except Exception as e:
             self.failed.emit(str(e))
@@ -258,6 +268,7 @@ class DocScanDialog(ModalDialog):
         self._timer.timeout.connect(self._refresh)
         if session:
             self._pick_size(session["page_size"])
+            self.margin_spin.setValue(session.get("margin_in", 0.25))
             self.add_items([st["item"] for st in session["pages"]], session["pages"])
         else:
             self.add_items(items)
@@ -289,24 +300,32 @@ class DocScanDialog(ModalDialog):
         root.addLayout(left)
 
         mid = QVBoxLayout()
+        modes = QHBoxLayout()
+        modes.addStretch(1)
+        self.mode_group = QButtonGroup(self)
+        for key, text, tip, left in (("crop", "Crop", "Adjust the page edges", True),
+                                     ("result", "Result", "See the finished page", False)):
+            b = QPushButton(text)
+            b.setCheckable(True)
+            b.setChecked(key == "crop")
+            b.setToolTip(tip)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(_mode_css(left))
+            b.clicked.connect(lambda _=False, k=key: self._set_mode(k))
+            self.mode_group.addButton(b)
+            modes.addWidget(b)
+        modes.addStretch(1)
+        mid.addLayout(modes)
         self.canvas = CornerCanvas()
         self.canvas.changed.connect(self._corners_changed)
         mid.addWidget(self.canvas, 1)
         self.status = QLabel("")
         self.status.setObjectName("muted")
         self.status.setWordWrap(True)
+        self.status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         mid.addWidget(self.status)
         bar = QHBoxLayout()
-        self.mode_group = QButtonGroup(self)
-        for key, text in (("crop", "Crop"), ("result", "Result")):
-            b = QPushButton(text)
-            b.setCheckable(True)
-            b.setChecked(key == "crop")
-            b.setStyleSheet(MODE_CSS)
-            b.clicked.connect(lambda _=False, k=key: self._set_mode(k))
-            self.mode_group.addButton(b)
-            bar.addWidget(b)
-        bar.addSpacing(10)
+        bar.addStretch(1)
         for text, slot in (("Auto detect", self._auto), ("Reset corners", self._reset),
                            ("Rotate left", lambda: self._rotate(-1)), ("Rotate right", lambda: self._rotate(1))):
             b = QPushButton(text)
@@ -353,6 +372,16 @@ class DocScanDialog(ModalDialog):
         for key, text, _ in docscan.PAGE_SIZES:
             self.size_combo.addItem(text, key)
         right.addWidget(self.size_combo)
+        right.addWidget(QLabel("Margin"))
+        self.margin_spin = QDoubleSpinBox()
+        self.margin_spin.setRange(0.0, 2.0)
+        self.margin_spin.setSingleStep(0.25)
+        self.margin_spin.setDecimals(2)
+        self.margin_spin.setSuffix(" in")
+        self.margin_spin.setValue(0.25)
+        self.margin_spin.setToolTip("White border kept around every scan on the paper.\n"
+                                    "With \"Same as the scan\", the page grows by this much.")
+        right.addWidget(self.margin_spin)
         right.addStretch(1)
         self.progress = QProgressBar()
         self.progress.hide()
@@ -586,7 +615,7 @@ class DocScanDialog(ModalDialog):
         self.progress.show()
         self.save_btn.setEnabled(False)
         self.status.setText("Saving…")
-        self._exporter = _ExportWorker(jobs, self.size_combo.currentData(), dest)
+        self._exporter = _ExportWorker(jobs, self.size_combo.currentData(), dest, self.margin_spin.value() * 72.0)
         self._exporter.progress.connect(self.progress.setValue)
         self._exporter.saved.connect(self._saved)
         self._exporter.failed.connect(self._save_failed)
@@ -609,7 +638,7 @@ class DocScanDialog(ModalDialog):
             pages.append({"item": item, "corners": [tuple(c) for c in p.corners], "found": p.found,
                           "turns": p.turns, "filter": p.filter, "brightness": p.brightness,
                           "contrast": p.contrast, "strength": p.strength})
-        return {"pages": pages, "page_size": self.size_combo.currentData()}
+        return {"pages": pages, "page_size": self.size_combo.currentData(), "margin_in": self.margin_spin.value()}
 
     def _saved(self, path):
         self.result_path = path
