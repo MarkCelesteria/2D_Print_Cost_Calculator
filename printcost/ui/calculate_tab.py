@@ -22,6 +22,7 @@ from printcost.core.analyzer import (render_pdf_page, apply_preview_mode, comput
 from printcost.ui.full_preview_dialog import FullPreviewDialog
 from printcost.ui.print_helper import print_pdf, print_duplex
 from printcost.ui.receipt import ReceiptDialog
+from printcost.core import saleslog
 from printcost.core import poster
 from printcost.core import idphoto
 from printcost.core import layout as page_layout
@@ -1682,6 +1683,16 @@ class CalculateTab(QWidget):
             "result": result,
         }
 
+    def _log_sale(self):
+        result = getattr(self, "_result", None)
+        if result is None or getattr(self, "_logged_result", None) is result:
+            return
+        try:
+            saleslog.log_sale(self._receipt_data(result, self._result_paper))
+            self._logged_result = result
+        except Exception:
+            pass  # the log must never stop a print
+
     def _on_print_clicked(self):
         if not self.resolved_pdf_path:
             notice(self, "warn", "Can't print", "No PDF to print. Install LibreOffice for .docx.")
@@ -1689,6 +1700,7 @@ class CalculateTab(QWidget):
         if self._selected_plan() != getattr(self, "print_pages", None):
             notice(self, "warn", "Pages changed", "Pages changed. Press Calculate again, then print.")
             return
+        self._log_sale()
         names = [os.path.basename(p) for p in self.sources]
         job_name = names[0] if len(names) == 1 else f"{len(names)} files"
         if self.layout_mode != "normal":

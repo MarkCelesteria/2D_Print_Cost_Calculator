@@ -77,8 +77,11 @@ class MainWindow(QMainWindow):
             self.settings, on_save=self._on_settings_saved,
             on_check_update=lambda: self._start_update_check(manual=True),
         )
+        self.sales_tab = SalesTab()
         tabs.addTab(self.calc_tab, "Calculate")
+        tabs.addTab(self.sales_tab, "Sales")
         tabs.addTab(self.settings_tab, "Settings")
+        tabs.currentChanged.connect(lambda i: self.sales_tab.refresh() if tabs.widget(i) is self.sales_tab else None)
 
         corner = QWidget()
         corner_layout = QHBoxLayout(corner)
@@ -343,7 +346,7 @@ def _apply_auto_scale():
 
 
 def main():
-    global pricing, autostart, updater, is_libreoffice_available, cleanup_temp_dirs, cleanup_old_temp_dirs, CalculateTab, SettingsTab
+    global pricing, autostart, updater, is_libreoffice_available, cleanup_temp_dirs, cleanup_old_temp_dirs, CalculateTab, SettingsTab, SalesTab
     _apply_auto_scale()
     app = QApplication(sys.argv)
     app.setApplicationName("Print Cost Calculator")
@@ -390,6 +393,7 @@ def main():
     step("Loading interface...")
     from printcost.ui.calculate_tab import CalculateTab
     from printcost.ui.settings_tab import SettingsTab
+    from printcost.ui.sales_tab import SalesTab
 
     app.aboutToQuit.connect(cleanup_temp_dirs)
     cleanup_old_temp_dirs()
