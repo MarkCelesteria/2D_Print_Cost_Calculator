@@ -80,7 +80,7 @@ def _clear(layout):
             _clear(item.layout())
 
 
-def _table(headers, min_height=200):
+def _table(headers):
     t = QTableWidget(0, len(headers))
     t.setHorizontalHeaderLabels(headers)
     t.verticalHeader().setVisible(False)
@@ -88,8 +88,14 @@ def _table(headers, min_height=200):
     t.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
     t.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
     t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-    t.setMinimumHeight(min_height)
     return t
+
+
+def _fit_height(t, max_rows):
+    """Shrinks the table to its rows (at least one row high); past max_rows it scrolls."""
+    rows = max(1, min(t.rowCount(), max_rows))
+    t.setFixedHeight(t.horizontalHeader().sizeHint().height()
+                     + rows * t.verticalHeader().defaultSectionSize() + 2 * t.frameWidth() + 2)
 
 
 def _cell(text):
@@ -189,6 +195,7 @@ class SalesTab(QWidget):
                       f"{v.get('paper', 0):,.2f}", f"{v.get('ink', 0):,.2f}")
             for col, text in enumerate(values):
                 self.month_table.setItem(i, col, _cell(text))
+        _fit_height(self.month_table, 12)
 
         self._recent = saleslog.recent()
         self.recent_table.setRowCount(len(self._recent))
@@ -206,6 +213,7 @@ class SalesTab(QWidget):
                 if col == 2:
                     item.setToolTip(job)
                 self.recent_table.setItem(i, col, item)
+        _fit_height(self.recent_table, 10)
 
     def _period_keys(self):
         today = date.today()
