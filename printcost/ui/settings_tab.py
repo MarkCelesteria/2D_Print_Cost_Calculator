@@ -710,6 +710,15 @@ class SettingsTab(QWidget):
 
     def _on_scale_changed(self, _i):
         val = self.scale_combo.currentData()
+        ask = QMessageBox.question(
+            self, "Interface size",
+            "The new size applies the next time the app starts.\n\nClose the app now, then open it again?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ask != QMessageBox.StandardButton.Yes:
+            self.scale_combo.blockSignals(True)
+            self.scale_combo.setCurrentIndex(max(0, self.scale_combo.findData(str(self.settings.get("ui_scale", "auto")))))
+            self.scale_combo.blockSignals(False)
+            return
         self.settings["ui_scale"] = val
         try:
             disk = pricing.load_settings()
@@ -717,12 +726,7 @@ class SettingsTab(QWidget):
             pricing.save_settings(disk)
         except Exception:
             pass
-        ask = QMessageBox.question(
-            self, "Interface size",
-            "The new size applies the next time the app starts.\n\nClose the app now, then open it again?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if ask == QMessageBox.StandardButton.Yes:
-            self._close_app()
+        self._close_app()
 
     def _close_app(self):
         try:
