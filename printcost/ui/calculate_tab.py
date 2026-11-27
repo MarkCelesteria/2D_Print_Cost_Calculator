@@ -34,6 +34,8 @@ from printcost.ui.help import HelpButton, with_help
 from printcost.ui.notes import label_style, notice
 from printcost.ui.style import MAGENTA_DARK, PRIMARY_DARK, ElidedLabel
 from printcost.ui.drop_overlay import DropOverlay
+from printcost.core import history
+from printcost.ui.history_dialog import HistoryDialog
 
 SEE_MORE = "See more sizes…"
 RECENT_SECONDS = 3 * 24 * 60 * 60
@@ -102,6 +104,8 @@ class CalculateTab(QWidget):
         self.pct_inputs = {}
         self.quality_inputs = {}
         self.manual_discount = None
+        self._pending_options = None
+        self._doc_edited = False
         self.setAcceptDrops(True)
         self._build()
         self.drop_overlay = DropOverlay(self)
@@ -199,7 +203,14 @@ class CalculateTab(QWidget):
         browse_btn.setObjectName("secondary")
         browse_btn.setToolTip("PDF, Word or images")
         browse_btn.clicked.connect(self._browse)
-        left_layout.addWidget(browse_btn)
+        history_btn = QPushButton("History")
+        history_btn.setObjectName("secondary")
+        history_btn.setToolTip("Reopen one of your last jobs, even if the original file is gone")
+        history_btn.clicked.connect(self._open_history)
+        browse_row = QHBoxLayout()
+        browse_row.addWidget(browse_btn, 1)
+        browse_row.addWidget(history_btn, 1)
+        left_layout.addLayout(browse_row)
 
         drop_hint = QLabel("or drag & drop files here")
         drop_hint.setObjectName("muted")
@@ -597,6 +608,8 @@ class CalculateTab(QWidget):
         paths = [p for p in paths if p.lower().endswith(SUPPORTED_EXTS)]
         if not paths:
             return
+        self._pending_options = None
+        self._doc_edited = False
         self.poster_job = None
         self._update_poster_box()
         self.sources = paths
@@ -609,8 +622,7 @@ class CalculateTab(QWidget):
         self._start_load(auto_calculate)
 
     def _reload_layout(self):
-        # paper / fit / per-page changed: rebuild the merged PDF
-        if self.poster_job:  # posters are rebuilt by _on_paper_changed; fit / per-page don't apply
+        if self.poster_job:
             return
         if len(self.sources) > 1 or any(is_image(p) for p in self.sources):
             self._clear_results()
@@ -627,7 +639,7 @@ class CalculateTab(QWidget):
                 self.doc_size = get_document_page_size(self.resolved_pdf_path)
             except Exception:
                 self.doc_size = None
-        if self.doc_size and is_new:  # only for a newly chosen file, never override a manual choice later
+        if self.doc_size and is_new and not (self._pending_options or {}).get("paper"):
             idx = closest_paper(self.doc_size, self.settings["paper_sizes"])
             if idx is not None and self.settings["paper_sizes"][idx]["name"] != self.paper_combo.currentText():
                 self._select_paper(self.settings["paper_sizes"][idx]["name"])
@@ -635,9 +647,9 @@ class CalculateTab(QWidget):
         self._update_paper_note()
 
     def _on_paper_changed(self):
-        if self.poster_job:  # the sheets changed size, so the tiles have to be cut again
+        if self.poster_job:
             self._rebuild_poster()
-        self._paper_auto_note = ""  # a manual choice: drop the "paper set to..." message
+        self._paper_auto_note = ""
         self._update_paper_note()
         if self.layout_mode == "booklet":
             self._apply_layout()
@@ -653,7 +665,7 @@ class CalculateTab(QWidget):
         ps = sorted((paper["width_in"], paper["height_in"]))
         label = f"{size[0]:g}×{size[1]:g} in"
         if max(abs(ps[0] - size[0]), abs(ps[1] - size[1])) <= 0.15:
-            text, level = getattr(self, "_paper_auto_note", ""), "info"  # matches: only say what the app did
+            text, level = getattr(self, "_paper_auto_note", ""), "info"
         else:
             scale = min(ps[0] / size[0], ps[1] / size[1])
             if scale < 0.98:
@@ -756,7 +768,9 @@ class CalculateTab(QWidget):
         if pdf_path is not None and self.layout_mode != "normal" and not self.poster_job:
             self._apply_layout()
 
-        if auto_calculate:
+        if self._pending_options is not None:
+            self._finish_restore()
+        elif auto_calculate:
             self._calculate()
 
     def _update_input_states(self):
@@ -954,6 +968,7 @@ class CalculateTab(QWidget):
             if idx is not None and self.settings["paper_sizes"][idx]["name"] != self.paper_combo.currentText():
                 self._select_paper(self.settings["paper_sizes"][idx]["name"])
         self._new_document = False
+        self._doc_edited = True
         self._detect_paper()
         self._clear_results()
         self._add_badge("Edited")
@@ -1395,6 +1410,7 @@ class CalculateTab(QWidget):
             )
             self.status_label.setText("Done (reused the earlier scan)." + (" (approximate estimate)" if cached_approx else ""))
             self._render_results(result, self.paper, cached_approx)
+            self._save_history(result)
             return
 
         self.worker = AnalyzeWorker(
@@ -1441,12 +1457,85 @@ class CalculateTab(QWidget):
         self.status_label.setText("")
         QMessageBox.critical(self, "Error", msg)
 
+    def _save_history(self, result):
+        if not self.settings.get("history_enabled", True) or self.poster_job or self._doc_edited or not self.sources:
+            return
+        defaults = self.settings["default_percentages"]
+        pct = {}
+        for key, field in self.pct_inputs.items():
+            try:
+                value = float(field.text())
+            except ValueError:
+                continue
+            if value != float(defaults.get(key, value)):
+                pct[key] = value
+        options = {
+            "paper": self.paper_combo.currentText(),
+            "type": self.type_combo.currentText(),
+            "mode": self.mode_combo.currentText(),
+            "quality": self.quality_combo.currentText(),
+            "fit": self.fit_combo.currentIndex(),
+            "per_page": self.per_page_combo.currentText(),
+            "pages": self.pages_input.text().strip(),
+            "layout": self.layout_mode,
+            "blank_covers": self.blank_covers_box.isChecked(),
+            "fold": self.fold_input.value(),
+            "pct": pct,
+        }
+        history.add(self.sources, options, float(result.get("total", 0) or 0), int(result.get("num_pages", 0) or 0))
+
+    def _open_history(self):
+        dialog = HistoryDialog(self.settings, self)
+        if dialog.exec() and dialog.chosen:
+            self._restore_job(dialog.chosen)
+
+    def _restore_job(self, entry):
+        paths = history.stored_paths(entry)
+        if not all(os.path.isfile(p) for p in paths):
+            QMessageBox.warning(self, "History", "The saved copy of this job is no longer available.")
+            return
+        o = dict(entry.get("options", {}))
+        if o.get("paper") not in self._all_paper_names():
+            o["paper"] = None
+        if o["paper"]:
+            self._select_paper(o["paper"])
+        for combo, value in ((self.type_combo, o.get("type")), (self.mode_combo, o.get("mode")),
+                             (self.quality_combo, o.get("quality"))):
+            if value:
+                combo.setCurrentText(value)
+        self.fit_combo.blockSignals(True)
+        self.fit_combo.setCurrentIndex(int(o.get("fit", 0)))
+        self.fit_combo.blockSignals(False)
+        self.per_page_combo.blockSignals(True)
+        self.per_page_combo.setCurrentText(str(o.get("per_page", "1")))
+        self.per_page_combo.blockSignals(False)
+        for key, field in self.pct_inputs.items():
+            field.setText(str(o.get("pct", {}).get(key, self.settings["default_percentages"][key])))
+        self.load_files(paths)
+        self._pending_options = o if self._loading else None
+
+    def _finish_restore(self):
+        o, self._pending_options = self._pending_options, None
+        self._update_paper_note()
+        self.pages_input.setText(o.get("pages", ""))
+        mode = o.get("layout", "normal")
+        if mode in page_layout.MODES and mode != self.layout_mode:
+            self.blank_covers_box.blockSignals(True)
+            self.blank_covers_box.setChecked(bool(o.get("blank_covers")))
+            self.blank_covers_box.blockSignals(False)
+            self.fold_input.blockSignals(True)
+            self.fold_input.setValue(float(o.get("fold", 0.0)))
+            self.fold_input.blockSignals(False)
+            self.layout_combo.setCurrentIndex(page_layout.MODES.index(mode))
+        self._calculate()
+
     def _on_success(self, result, is_approx):
         self._set_calculating(False)
         if self._calc_load_id == self._load_id:
             self._analysis_cache[self.print_mode] = (result["all_coverage"], is_approx)
         self.status_label.setText("Done." + (" (approximate estimate)" if is_approx else ""))
         self._render_results(result, self.paper, is_approx)
+        self._save_history(result)
 
     def _clear_results(self):
         while self.results_layout.count():

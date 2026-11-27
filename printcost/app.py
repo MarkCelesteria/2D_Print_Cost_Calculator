@@ -397,6 +397,9 @@ def main():
 
     app.aboutToQuit.connect(cleanup_temp_dirs)
     cleanup_old_temp_dirs()
+    import threading
+    from printcost.core import history
+    threading.Thread(target=history.cleanup, daemon=True).start()
     step("Starting...")
     window = MainWindow(initial_file=initial_file, auto_calculate=bool(initial_file))
     instance = single_instance.InstanceServer(app)

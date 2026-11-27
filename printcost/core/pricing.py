@@ -93,6 +93,7 @@ DEFAULT_SETTINGS = {
     "discounts": [],
     "bulk_discounts": [],
     "asked_about_autostart": False,
+    "history_enabled": True,
     "poster": {
         "cols": 3, "rows": 2, "landscape": False, "fill": False,
         "overlap_in": 0.0, "margin_in": 0.25, "marks": False, "labels": False,
