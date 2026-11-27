@@ -293,8 +293,58 @@ class MainWindow(QMainWindow):
         self.hide()
 
 
+def _apply_auto_scale():
+    try:
+        from printcost.core import pricing
+        choice = str(pricing.load_settings().get("ui_scale", "auto"))
+    except Exception:
+        choice = "auto"
+    if choice != "auto":
+        try:
+            os.environ["QT_SCALE_FACTOR"] = f"{float(choice):.2f}"
+            return
+        except ValueError:
+            pass
+    if os.environ.get("QT_SCALE_FACTOR") or not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        old = None
+        try:
+            user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+            user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+            old = user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+        except Exception:
+            pass
+        rect = wintypes.RECT()
+        user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)
+        try:
+            user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+            user32.MonitorFromPoint.restype = ctypes.c_void_p
+            hmon = user32.MonitorFromPoint(wintypes.POINT(0, 0), 1)
+            dx, dy = ctypes.c_uint(), ctypes.c_uint()
+            ctypes.windll.shcore.GetDpiForMonitor(ctypes.c_void_p(hmon), 0, ctypes.byref(dx), ctypes.byref(dy))
+            dpi = dx.value or 96
+        except Exception:
+            dpi = 96
+        if old:
+            user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(old))
+        k = dpi / 96
+        avail_w = (rect.right - rect.left) / k
+        avail_h = (rect.bottom - rect.top) / k
+        f = min(1.0, avail_w / 960, avail_h / 970)
+        if f < 0.98:
+            os.environ["QT_SCALE_FACTOR"] = f"{max(f, 0.55):.2f}"
+    except Exception:
+        import traceback
+        traceback.print_exc()
+
+
 def main():
     global pricing, autostart, updater, is_libreoffice_available, cleanup_temp_dirs, cleanup_old_temp_dirs, CalculateTab, SettingsTab
+    _apply_auto_scale()
     app = QApplication(sys.argv)
     app.setApplicationName("Print Cost Calculator")
     app.setQuitOnLastWindowClosed(False)

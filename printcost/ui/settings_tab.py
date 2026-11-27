@@ -1,10 +1,12 @@
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFrame, QLineEdit, QMessageBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QDialog, QDialogButtonBox, QFormLayout, QScrollArea, QCheckBox, QTextEdit
+    QHeaderView, QDialog, QDialogButtonBox, QFormLayout, QScrollArea, QCheckBox, QTextEdit, QComboBox
 )
 from PyQt6.QtCore import Qt, QRectF, QSize, QVariantAnimation
 from PyQt6.QtGui import QPainter, QColor, QPen
+import os
+import subprocess
 import sys
 
 from printcost.core import pricing
@@ -16,6 +18,10 @@ from printcost.ui.notes import notice
 from printcost.ui.modal import ModalDialog
 
 QUALITY_LABELS = [("draft", "Draft"), ("standard", "Standard"), ("high", "High")]
+
+UI_SCALES = [("Auto", "auto"), ("50%", "0.50"), ("60%", "0.60"), ("70%", "0.70"),
+             ("75%", "0.75"), ("80%", "0.80"), ("90%", "0.90"), ("100%", "1.00"),
+             ("125%", "1.25"), ("150%", "1.50"), ("175%", "1.75"), ("200%", "2.00")]
 
 PCT_LABELS = [
     ("labor", "Labor %"),
@@ -398,6 +404,17 @@ class SettingsTab(QWidget):
             self.autostart_box.toggled.connect(self._toggle_autostart)
             gen_layout.addWidget(self.autostart_box)
 
+        scale_row = QHBoxLayout()
+        scale_row.addWidget(QLabel("Interface size"))
+        scale_row.addStretch()
+        self.scale_combo = QComboBox()
+        for label, val in UI_SCALES:
+            self.scale_combo.addItem(label, val)
+        self.scale_combo.setCurrentIndex(max(0, self.scale_combo.findData(str(self.settings.get("ui_scale", "auto")))))
+        self.scale_combo.currentIndexChanged.connect(self._on_scale_changed)
+        scale_row.addWidget(self.scale_combo)
+        gen_layout.addLayout(scale_row)
+
         update_row = QHBoxLayout()
         update_row.addWidget(QLabel(f"Version {updater.APP_VERSION}"))
         update_row.addStretch()
@@ -660,7 +677,7 @@ class SettingsTab(QWidget):
         for w in self.findChildren(QLineEdit):
             w.textChanged.connect(self._mark_dirty)
         for w in self.findChildren(QCheckBox):
-            if w is not getattr(self, "autostart_box", None):  # that one applies at once, it is not saved here
+            if w is not getattr(self, "autostart_box", None):
                 w.toggled.connect(self._mark_dirty)
         self._set_dirty(False)
 
@@ -690,6 +707,31 @@ class SettingsTab(QWidget):
             self.autostart_box.blockSignals(True)
             self.autostart_box.setChecked(autostart.is_autostart_enabled())
             self.autostart_box.blockSignals(False)
+
+    def _on_scale_changed(self, _i):
+        val = self.scale_combo.currentData()
+        self.settings["ui_scale"] = val
+        try:
+            disk = pricing.load_settings()
+            disk["ui_scale"] = val
+            pricing.save_settings(disk)
+        except Exception:
+            pass
+        ask = QMessageBox.question(
+            self, "Interface size",
+            "The new size applies the next time the app starts.\n\nClose the app now, then open it again?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ask == QMessageBox.StandardButton.Yes:
+            self._close_app()
+
+    def _close_app(self):
+        try:
+            self.window().tray_icon.hide()
+            from printcost.core.analyzer import cleanup_temp_dirs
+            cleanup_temp_dirs()
+        except Exception:
+            pass
+        os._exit(0)
 
     def _make_table(self, headers):
         t = QTableWidget(0, len(headers))
