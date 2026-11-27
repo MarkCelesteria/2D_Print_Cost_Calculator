@@ -1577,6 +1577,7 @@ class CalculateTab(QWidget):
             actions.addWidget(disc_btn, 1)
         actions.addWidget(self._action_button("Print", "printer", self._on_print_clicked, cta=True), 1)
         receipt_data = self._receipt_data(result, paper)
+        self._receipt = receipt_data
         actions.addWidget(self._action_button(
             "View Receipt", "receipt", lambda: ReceiptDialog(receipt_data, self).exec()), 1)
         summary_layout.addLayout(actions)
@@ -1688,7 +1689,7 @@ class CalculateTab(QWidget):
         if result is None or getattr(self, "_logged_result", None) is result:
             return
         try:
-            saleslog.log_sale(self._receipt_data(result, self._result_paper))
+            saleslog.log_sale(self._receipt)
             self._logged_result = result
         except Exception:
             pass  # the log must never stop a print
