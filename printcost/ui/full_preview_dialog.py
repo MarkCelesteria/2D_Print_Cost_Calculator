@@ -18,7 +18,7 @@ from printcost.core.analyzer import (
 from printcost.core.pdf_editor import PdfEditor, export_pdf
 from printcost.ui.icons import make_icon
 from printcost.ui.preview_widget import pil_to_qpixmap
-from printcost.ui.style import PREVIEW_BG, MUTED, PRIMARY, BORDER, ACCENT_LINE, MAGENTA
+from printcost.ui.style import PREVIEW_BG, MUTED, PRIMARY, BORDER, ACCENT_LINE, MAGENTA, ElidedLabel
 
 STRIP_PAGE_SIZE = (700, 900)   # page size at 100% zoom
 ZOOM_MIN = 0.5
@@ -883,11 +883,10 @@ class FullPreviewDialog(QDialog):
         self._mode_name = mode_names.get(mode, "Color")
         self._edit_hint = ("Right-click an image for more  ·  drag an image off its page onto another page to move it  ·  "
                            "drop picture files onto a page to add them")
-        self.hint = QLabel()
+        self.hint = ElidedLabel()
         self.hint.setObjectName("muted")
         self._refresh_hint()
-        top_row.addWidget(self.hint)
-        top_row.addStretch()
+        top_row.addWidget(self.hint, 1)
 
         def button(text, slot, tip=""):
             b = QPushButton(text)
@@ -940,7 +939,7 @@ class FullPreviewDialog(QDialog):
         pages_menu.aboutToShow.connect(self._refresh_page_menu)
         self.pages_btn.setMenu(pages_menu)
 
-        self.edit_tip = QLabel(self._edit_hint)
+        self.edit_tip = ElidedLabel(self._edit_hint)
         self.edit_tip.setObjectName("muted")
         self.edit_tools = [self.undo_btn, self.redo_btn, self.reset_btn, self.add_btn, self.copy_btn, self.paste_btn,
                            self.delete_btn, self.crop_btn, self.position_btn, self.pages_btn, self.edit_tip]
@@ -956,6 +955,9 @@ class FullPreviewDialog(QDialog):
         self.orient_combo.addItem("Landscape", "landscape")
         self.orient_combo.setToolTip("Turn every page to portrait or landscape")
         self.orient_combo.activated.connect(lambda _: self._apply_page_setup())
+        for c in (self.paper_combo, self.orient_combo):
+            c.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            c.setMinimumContentsLength(14)
         self.edit_tools += [self.paper_combo, self.orient_combo]
         for w in self.edit_tools + [self.apply_crop_btn, self.cancel_crop_btn]:
             w.setVisible(False)
@@ -991,7 +993,7 @@ class FullPreviewDialog(QDialog):
         top_row.addWidget(close_btn)
         layout.addLayout(top_row)
 
-        edit_row = QHBoxLayout()   # second row, only shown in edit mode
+        edit_row = QHBoxLayout()
         edit_row.setSpacing(6)
         for group in ((self.undo_btn, self.redo_btn, self.reset_btn),
                       (self.add_btn, self.copy_btn, self.paste_btn, self.delete_btn),
@@ -1003,8 +1005,7 @@ class FullPreviewDialog(QDialog):
         edit_row.addWidget(self.orient_combo)
         edit_row.addWidget(self.apply_crop_btn)
         edit_row.addWidget(self.cancel_crop_btn)
-        edit_row.addStretch()
-        edit_row.addWidget(self.edit_tip)
+        edit_row.addWidget(self.edit_tip, 1)
         layout.addLayout(edit_row)
 
         self.scroll = QScrollArea()
