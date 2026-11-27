@@ -1,9 +1,11 @@
 from datetime import date, datetime, timedelta
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton, QComboBox, QProgressBar,
     QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
+    QDialog, QDialogButtonBox, QFormLayout, QDoubleSpinBox, QLineEdit,
 )
 
 from printcost.core import saleslog
@@ -11,6 +13,7 @@ from printcost.ui.receipt import ReceiptDialog, receipt_number
 
 MONTHS_SHOWN = 36
 PERIODS = ["This month", "Last month", "Last 12 months", "All time"]
+NEGATIVE = "#b91c1c"
 
 
 def _card():
@@ -98,9 +101,15 @@ def _fit_height(t, max_rows):
                      + rows * t.verticalHeader().defaultSectionSize() + 2 * t.frameWidth() + 2)
 
 
-def _cell(text):
+def _cell(text, color=None, bold=False):
     item = QTableWidgetItem(text)
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    if color:
+        item.setForeground(QColor(color))
+    if bold:
+        f = item.font()
+        f.setBold(True)
+        item.setFont(f)
     return item
 
 
@@ -112,6 +121,41 @@ def _sum(rows):
         for c, a in (v.get("cats") or {}).items():
             t["cats"][c] = t["cats"].get(c, 0.0) + a
     return t
+
+
+class SpendDialog(QDialog):
+    """Buy supplies: takes money out of one bank."""
+
+    def __init__(self, banks, current_key, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Spend from bank")
+        self.setMinimumWidth(380)
+        form = QFormLayout(self)
+        self.bank = QComboBox()
+        for key, label, _earned, _spent, balance in banks:
+            self.bank.addItem(f"{label}  (bank {balance:,.2f})", key)
+        idx = self.bank.findData(current_key)
+        if idx >= 0:
+            self.bank.setCurrentIndex(idx)
+        self.amount = QDoubleSpinBox()
+        self.amount.setRange(0.0, 10_000_000)
+        self.amount.setDecimals(2)
+        self.note = QLineEdit()
+        self.note.setPlaceholderText("e.g. A4 ream, 500 sheets")
+        form.addRow("Bank", self.bank)
+        form.addRow("Amount spent", self.amount)
+        form.addRow("Note", self.note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._ok)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def _ok(self):
+        if self.amount.value() > 0:
+            self.accept()
+
+    def values(self):
+        return self.bank.currentData(), self.amount.value(), self.note.text().strip()
 
 
 class SalesTab(QWidget):
@@ -150,6 +194,49 @@ class SalesTab(QWidget):
         self.cards.setSpacing(10)
         root.addLayout(self.cards)
 
+        bank_card, bk = _card()
+        bank_head = QHBoxLayout()
+        bank_title = QLabel("Banks")
+        bank_title.setObjectName("cardHeader")
+        bank_head.addWidget(bank_title)
+        bank_head.addStretch()
+        spend_btn = QPushButton("Spend from bank")
+        spend_btn.setObjectName("cta")
+        spend_btn.clicked.connect(self._spend)
+        bank_head.addWidget(spend_btn)
+        bk.addLayout(bank_head)
+        self.bank_sub = QLabel()
+        self.bank_sub.setObjectName("muted")
+        self.bank_sub.setWordWrap(True)
+        bk.addWidget(self.bank_sub)
+        self.bank_table = _table(["Bank", "Earned", "Spent", "Balance"])
+        bk.addWidget(self.bank_table)
+        root.addWidget(bank_card)
+
+        spend_card, sk = _card()
+        spend_head = QHBoxLayout()
+        spend_title = QLabel("Spending history")
+        spend_title.setObjectName("cardHeader")
+        spend_head.addWidget(spend_title)
+        spend_head.addStretch()
+        self.remove_spend_btn = QPushButton("Remove selected")
+        self.remove_spend_btn.setObjectName("cta")
+        self.remove_spend_btn.setVisible(False)
+        self.remove_spend_btn.clicked.connect(self._remove_spends)
+        spend_head.addWidget(self.remove_spend_btn)
+        edit_spend_btn = QPushButton("Edit")
+        edit_spend_btn.setObjectName("secondary")
+        edit_spend_btn.setCheckable(True)
+        spend_head.addWidget(edit_spend_btn)
+        sk.addLayout(spend_head)
+        spend_sub = QLabel("Money taken out of a bank. Remove one to put the money back.")
+        spend_sub.setObjectName("muted")
+        sk.addWidget(spend_sub)
+        self.spend_table = _table(["Date", "Bank", "Note", "Amount"])
+        sk.addWidget(self.spend_table)
+        edit_spend_btn.toggled.connect(lambda on: self._set_edit(self.spend_table, self.remove_spend_btn, on))
+        root.addWidget(spend_card)
+
         month_card, ml = _card()
         header = QLabel("Monthly sales")
         header.setObjectName("cardHeader")
@@ -162,7 +249,7 @@ class SalesTab(QWidget):
         header2 = QLabel("Recent receipts")
         header2.setObjectName("cardHeader")
         rl.addWidget(header2)
-        sub = QLabel(f"The last {saleslog.MAX_RECENT} printed jobs. Double-click one to open its receipt.")
+        sub = QLabel(f"The last {saleslog.MAX_RECENT} printed jobs. Double-click one to open its receipt, or press Edit to remove some.")
         sub.setObjectName("muted")
         sub.setWordWrap(True)
         rl.addWidget(sub)
@@ -171,6 +258,16 @@ class SalesTab(QWidget):
         rl.addWidget(self.recent_table)
         row = QHBoxLayout()
         row.addStretch()
+        self.remove_sale_btn = QPushButton("Remove selected")
+        self.remove_sale_btn.setObjectName("cta")
+        self.remove_sale_btn.setVisible(False)
+        self.remove_sale_btn.clicked.connect(self._remove_sales)
+        row.addWidget(self.remove_sale_btn)
+        edit_sale_btn = QPushButton("Edit")
+        edit_sale_btn.setObjectName("secondary")
+        edit_sale_btn.setCheckable(True)
+        edit_sale_btn.toggled.connect(lambda on: self._set_edit(self.recent_table, self.remove_sale_btn, on))
+        row.addWidget(edit_sale_btn)
         open_btn = QPushButton("View Receipt")
         open_btn.setObjectName("secondary")
         open_btn.clicked.connect(lambda: self._open(self.recent_table.currentRow()))
@@ -186,6 +283,8 @@ class SalesTab(QWidget):
         months = saleslog.months()
         self._months = dict(months)
         self._fill_cards()
+        self._fill_banks()
+        self._fill_spends()
 
         shown = months[:MONTHS_SHOWN]
         self.month_table.setRowCount(len(shown))
@@ -298,6 +397,96 @@ class SalesTab(QWidget):
         split.addWidget(pct_card, 1)
 
         self.cards.addLayout(split)
+
+    def _fill_banks(self):
+        self._banks = saleslog.banks()
+        earned = sum(b[2] for b in self._banks)
+        spent = sum(b[3] for b in self._banks)
+        balance = sum(b[4] for b in self._banks)
+        self.bank_sub.setText("All time. Paper, ink and each percentage add to their bank with every sale; "
+                              f"buying supplies takes money out.  Total in banks: {balance:,.2f}")
+        rows = [(b[1], b[2], b[3], b[4], False) for b in self._banks] + [("Total", earned, spent, balance, True)]
+        self.bank_table.setRowCount(len(rows))
+        for i, (label, e, sp, bal, bold) in enumerate(rows):
+            self.bank_table.setItem(i, 0, _cell(label, bold=bold))
+            self.bank_table.setItem(i, 1, _cell(f"{e:,.2f}", bold=bold))
+            self.bank_table.setItem(i, 2, _cell(f"{sp:,.2f}", bold=bold))
+            self.bank_table.setItem(i, 3, _cell(f"{bal:,.2f}", NEGATIVE if bal < -0.004 else None, bold=True))
+        _fit_height(self.bank_table, len(rows))
+
+    def _fill_spends(self):
+        self._spends = saleslog.spends()
+        names = dict(saleslog.BANKS)
+        self.spend_table.setRowCount(len(self._spends))
+        for i, sp in enumerate(self._spends):
+            try:
+                when = datetime.fromisoformat(sp["ts"]).strftime("%b %d, %I:%M %p")
+            except (KeyError, ValueError):
+                when = sp.get("ts", "")
+            note = sp.get("note", "")
+            for col, text in enumerate((when, names.get(sp.get("bank"), sp.get("bank", "")), note,
+                                        f"{sp.get('amount', 0):,.2f}")):
+                item = _cell(text)
+                if col == 2:
+                    item.setToolTip(note)
+                self.spend_table.setItem(i, col, item)
+        _fit_height(self.spend_table, 8)
+
+    def _spend(self):
+        row = self.bank_table.currentRow()
+        key = self._banks[row][0] if 0 <= row < len(self._banks) else None
+        dlg = SpendDialog(self._banks, key, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        key, amount, note = dlg.values()
+        label, balance = next((b[1], b[4]) for b in self._banks if b[0] == key)
+        if amount > balance + 0.004:
+            ask = QMessageBox.question(
+                self, "Not enough in the bank",
+                f"The {label} bank only has {balance:,.2f}. Spend {amount:,.2f} anyway?\n"
+                "The bank will go below zero.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ask != QMessageBox.StandardButton.Yes:
+                return
+        saleslog.add_spend(key, amount, note)
+        self.refresh()
+
+    def _set_edit(self, table, remove_btn, on):
+        table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection if on
+                               else QTableWidget.SelectionMode.SingleSelection)
+        remove_btn.setVisible(on)
+        if not on:
+            table.clearSelection()
+
+    @staticmethod
+    def _selected_rows(table):
+        return sorted({i.row() for i in table.selectedIndexes()})
+
+    def _remove_sales(self):
+        ids = [self._recent[r]["id"] for r in self._selected_rows(self.recent_table) if 0 <= r < len(self._recent)]
+        if not ids:
+            return
+        ask = QMessageBox.question(
+            self, "Remove receipts",
+            f"Remove {len(ids)} receipt(s) from the sales log?\n\n"
+            "Monthly sales, revenue and the banks go down by their amounts. "
+            "This doesn't cancel the receipt the customer already has.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ask == QMessageBox.StandardButton.Yes:
+            saleslog.delete_sales(ids)
+            self.refresh()
+
+    def _remove_spends(self):
+        ids = [self._spends[r]["id"] for r in self._selected_rows(self.spend_table) if 0 <= r < len(self._spends)]
+        if not ids:
+            return
+        ask = QMessageBox.question(
+            self, "Remove spending",
+            f"Remove {len(ids)} spending record(s)? The money goes back into its bank.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ask == QMessageBox.StandardButton.Yes:
+            saleslog.delete_spends(ids)
+            self.refresh()
 
     def _open(self, row):
         if not 0 <= row < len(self._recent):
